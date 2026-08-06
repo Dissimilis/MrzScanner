@@ -1,0 +1,54 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>netstandard2.0;net8.0</TargetFrameworks>
+    <LangVersion>12</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Dissimilis.MrzScanner</RootNamespace>
+    <AssemblyName>Dissimilis.MrzScanner</AssemblyName>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <PackageId>Dissimilis.MrzScanner</PackageId>
+    <Version>1.0.0</Version>
+    <Authors>dissimilis</Authors>
+    <Copyright>Copyright (c) dissimilis</Copyright>
+    <Description>Pure C# MRZ (machine readable zone) reader for identity documents. Locates the MRZ in a photo, recognizes the OCR-B characters in managed code, and parses all ICAO 9303 formats (TD1, TD2, TD3, MRV) with full check digit validation. Includes fast MRZ area detection, calibrated confidence, and a multi-frame video session for camera capture. No native binaries, no ML runtimes.</Description>
+    <PackageTags>mrz;ocr;passport;id-card;visa;icao-9303;identity;document;kyc;scanner</PackageTags>
+    <PackageReleaseNotes>First release: full ICAO 9303 parsing and validation, image OCR with checksum guided recognition, MRZ area detection, region reporting, calibrated confidence with per field detail, and multi-frame video capture sessions.</PackageReleaseNotes>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageIcon>icon.png</PackageIcon>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageProjectUrl>https://github.com/Dissimilis/MrzScanner</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/Dissimilis/MrzScanner</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <Deterministic>true</Deterministic>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\docs\icon.png" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="StbImageSharp" Version="2.30.15" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Dissimilis.MrzScanner.Tests" />
+    <InternalsVisibleTo Include="SamplesHarness" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+    <PackageReference Include="System.Memory" Version="4.5.5" />
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="8.0.0" />
+    <PackageReference Include="System.Numerics.Vectors" Version="4.5.0" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,104 @@
+namespace Dissimilis.MrzScanner;
+
+/// <summary>
+/// A decoded image supplied by the caller, so the built-in decoder can be bypassed.
+/// Create instances through the factory methods; they validate the buffer layout.
+/// </summary>
+public readonly struct MrzImage
+{
+    internal enum PixelLayout
+    {
+        Grayscale8,
+        Rgb24,
+        Bgr24,
+        Rgba32,
+        Bgra32,
+    }
+
+    private MrzImage(byte[] pixels, int width, int height, int stride, PixelLayout layout)
+    {
+        Pixels = pixels;
+        Width = width;
+        Height = height;
+        Stride = stride;
+        Layout = layout;
+    }
+
+    internal byte[] Pixels { get; }
+    internal int Width { get; }
+    internal int Height { get; }
+    internal int Stride { get; }
+    internal PixelLayout Layout { get; }
+
+    /// <summary>True when created through a factory method; default instances are invalid.</summary>
+    public bool IsValid => Pixels is not null;
+
+    /// <summary>Wraps an 8 bit per pixel grayscale buffer.</summary>
+    /// <param name="pixels">Pixel rows, top to bottom.</param>
+    /// <param name="width">Width in pixels.</param>
+    /// <param name="height">Height in pixels.</param>
+    /// <param name="stride">Bytes per row; 0 means tightly packed.</param>
+    public static MrzImage FromGrayscale8(byte[] pixels, int width, int height, int stride = 0)
+        => Create(pixels, width, height, stride, 1, PixelLayout.Grayscale8);
+
+    /// <summary>Wraps a 24 bit per pixel RGB buffer.</summary>
+    /// <param name="pixels">Pixel rows, top to bottom.</param>
+    /// <param name="width">Width in pixels.</param>
+    /// <param name="height">Height in pixels.</param>
+    /// <param name="stride">Bytes per row; 0 means tightly packed.</param>
+    public static MrzImage FromRgb24(byte[] pixels, int width, int height, int stride = 0)
+        => Create(pixels, width, height, stride, 3, PixelLayout.Rgb24);
+
+    /// <summary>Wraps a 24 bit per pixel BGR buffer.</summary>
+    /// <param name="pixels">Pixel rows, top to bottom.</param>
+    /// <param name="width">Width in pixels.</param>
+    /// <param name="height">Height in pixels.</param>
+    /// <param name="stride">Bytes per row; 0 means tightly packed.</param>
+    public static MrzImage FromBgr24(byte[] pixels, int width, int height, int stride = 0)
+        => Create(pixels, width, height, stride, 3, PixelLayout.Bgr24);
+
+    /// <summary>Wraps a 32 bit per pixel RGBA buffer.</summary>
+    /// <param name="pixels">Pixel rows, top to bottom.</param>
+    /// <param name="width">Width in pixels.</param>
+    /// <param name="height">Height in pixels.</param>
+    /// <param name="stride">Bytes per row; 0 means tightly packed.</param>
+    public static MrzImage FromRgba32(byte[] pixels, int width, int height, int stride = 0)
+        => Create(pixels, width, height, stride, 4, PixelLayout.Rgba32);
+
+    /// <summary>Wraps a 32 bit per pixel BGRA buffer.</summary>
+    /// <param name="pixels">Pixel rows, top to bottom.</param>
+    /// <param name="width">Width in pixels.</param>
+    /// <param name="height">Height in pixels.</param>
+    /// <param name="stride">Bytes per row; 0 means tightly packed.</param>
+    public static MrzImage FromBgra32(byte[] pixels, int width, int height, int stride = 0)
+        => Create(pixels, width, height, stride, 4, PixelLayout.Bgra32);
+
+    private static MrzImage Create(byte[] pixels, int width, int height, int stride, int bytesPerPixel, PixelLayout layout)
+    {
+        if (pixels is null)
+            throw new ArgumentNullException(nameof(pixels));
+        if (width <= 0)
+            throw new ArgumentOutOfRangeException(nameof(width), width, "Width must be positive.");
+        if (height <= 0)
+            throw new ArgumentOutOfRangeException(nameof(height), height, "Height must be positive.");
+
+        // Long arithmetic so extreme dimensions cannot wrap the validation.
+        long minStrideLong = (long)width * bytesPerPixel;
+        if (minStrideLong > int.MaxValue || (long)width * height > int.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(width), width, "Image dimensions are too large.");
+        int minStride = (int)minStrideLong;
+        if (stride == 0)
+            stride = minStride;
+        if (stride < minStride)
+            throw new ArgumentOutOfRangeException(nameof(stride), stride,
+                $"Stride must be at least {minStride} bytes for width {width}.");
+
+        long required = (long)stride * (height - 1) + minStride;
+        if (pixels.Length < required)
+            throw new ArgumentException(
+                $"Pixel buffer has {pixels.Length} bytes but the layout requires at least {required}.",
+                nameof(pixels));
+
+        return new MrzImage(pixels, width, height, stride, layout);
+    }
+}

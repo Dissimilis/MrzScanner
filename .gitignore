@@ -1,0 +1,50 @@
+# Build results
+bin/
+obj/
+out/
+artifacts/
+*.nupkg
+*.snupkg
+
+# Visual Studio / Rider / VS Code
+.vs/
+.idea/
+.vscode/
+*.user
+*.suo
+
+# Test results and coverage
+TestResults/
+coverage/
+*.trx
+*.coverage
+coverage.*.xml
+
+# NuGet
+*.nuget.props
+*.nuget.targets
+packages/
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Sample documents (real ID scans, must never be published)
+samples/
+
+# AI tooling
+.claude/
+CLAUDE.md
+CLAUDE.local.md
+.serena/
+.codex/
+.opencode/
+.cursor/
+.aider*
+.mcp.json
+AGENTS.md
+GEMINI.md
+.copilot/
+
+# Local secrets (API keys), never committed
+.secrets/

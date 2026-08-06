@@ -1,0 +1,14 @@
+<Solution>
+  <Folder Name="/demo/">
+    <Project Path="demo/MrzScanner.Demo/MrzScanner.Demo.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Dissimilis.MrzScanner/Dissimilis.MrzScanner.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Dissimilis.MrzScanner.Tests/Dissimilis.MrzScanner.Tests.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/SamplesHarness/SamplesHarness.csproj" />
+  </Folder>
+</Solution>
