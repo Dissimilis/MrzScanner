@@ -40,16 +40,20 @@ internal static class MrzPipeline
             // would double the cost of every slightly crooked non-document
             // frame for a pass the level read effectively already had.
             const double rescueThreshold = 2.5;
-            double correction = Deskew.EstimateCorrectionDegrees(image.DownscaleTo(options.MaxImageDimension));
+            GrayImage working = image.DownscaleTo(options.MaxImageDimension);
+            double correction = Deskew.EstimateCorrectionDegrees(working);
             if (Math.Abs(correction) >= rescueThreshold)
             {
                 ct.ThrowIfCancellationRequested();
 
-                // Upright pass only: the estimator reads horizontal row
-                // structure, so a sideways document cannot have produced the
-                // correction that got us here.
+                // The capped working image is rotated, not the original:
+                // rotating a full resolution photo would cost more than the
+                // retry itself, and the crops the retry reads come out of the
+                // rotated image anyway. Upright pass only: the estimator reads
+                // horizontal row structure, so a sideways document cannot have
+                // produced the correction that got us here.
                 Ranked? leveled = ProcessOriented(
-                    image.RotateBy(correction), options, parser, ct, rotatedPass: false);
+                    working.RotateBy(correction), options, parser, ct, rotatedPass: false);
 
                 // The rerun re-rolls the arbitration dice on whatever text
                 // rows the frame has, so on MRZ-less card fronts it can
@@ -57,13 +61,64 @@ internal static class MrzPipeline
                 // A rescue pass only counts when it is convincing on its own:
                 // checksum agreement that did not come from wholesale coercion.
                 if (leveled is not null && IsConvincing(leveled))
-                    best = Better(best, leveled);
+                    best = Better(best, MapRescuedRegion(leveled, working, image, correction));
             }
         }
 
         if (best is null)
             return MrzResult.NotFound("No MRZ-shaped region was detected in the image.", NotFoundHints(image));
         return GateWeakFound(best, options.SearchEffort);
+    }
+
+    /// <summary>
+    /// A rescued read located its band in the rotated, downscaled working
+    /// image, but MrzRegion promises coordinates of the supplied image. The
+    /// rect's corners are pushed through the same transform the rotation
+    /// sampled with, then scaled back up and clamped.
+    /// </summary>
+    private static Ranked MapRescuedRegion(Ranked ranked, GrayImage working, GrayImage original, double correctionDegrees)
+    {
+        MrzRegion? region = ranked.Result.Region;
+        if (region is null)
+            return ranked;
+
+        double radians = correctionDegrees * Math.PI / 180;
+        double cos = Math.Cos(radians);
+        double sin = Math.Sin(radians);
+        double cx = (working.Width - 1) / 2.0;
+        double cy = (working.Height - 1) / 2.0;
+        double scaleX = original.Width / (double)working.Width;
+        double scaleY = original.Height / (double)working.Height;
+
+        double minX = double.MaxValue, minY = double.MaxValue;
+        double maxX = double.MinValue, maxY = double.MinValue;
+        Span<double> xs = stackalloc double[] { region.Left, region.Left + region.Width, region.Left, region.Left + region.Width };
+        Span<double> ys = stackalloc double[] { region.Top, region.Top, region.Top + region.Height, region.Top + region.Height };
+        for (int i = 0; i < 4; i++)
+        {
+            double dx = xs[i] - cx;
+            double dy = ys[i] - cy;
+            double sx = (cx + dx * cos - dy * sin) * scaleX;
+            double sy = (cy + dx * sin + dy * cos) * scaleY;
+            minX = Math.Min(minX, sx);
+            maxX = Math.Max(maxX, sx);
+            minY = Math.Min(minY, sy);
+            maxY = Math.Max(maxY, sy);
+        }
+
+        int left = Math.Max(0, (int)minX);
+        int top = Math.Max(0, (int)minY);
+        var mapped = new MrzRegion(
+            left,
+            top,
+            Math.Min(original.Width, (int)Math.Ceiling(maxX)) - left,
+            Math.Min(original.Height, (int)Math.Ceiling(maxY)) - top,
+            region.RotationDegrees,
+            region.LineCount,
+            region.Score);
+        return new Ranked(
+            ranked.Result.WithRegion(mapped), ranked.HypothesisScore, ranked.Coercions,
+            mapped, ranked.Quality, ranked.Stats);
     }
 
     private static Ranked? ProcessAllPasses(GrayImage image, MrzScannerOptions options, MrzParser parser, CancellationToken ct)
@@ -121,7 +176,7 @@ internal static class MrzPipeline
             hints.Add(MrzCaptureHint.TooSmall);
         if (stats.TouchesEdge)
             hints.Add(MrzCaptureHint.CutOff);
-        if (stats.GlareFraction > 0.08)
+        if (stats.GlareFraction > 0.10)
             hints.Add(MrzCaptureHint.Glare);
         if (stats.ContrastRange < 50)
             hints.Add(MrzCaptureHint.LowContrast);
@@ -410,8 +465,10 @@ internal static class MrzPipeline
         int saturated = 0;
         for (int i = 0; i < pixels.Length; i++)
         {
+            // Only hard clipping counts as glare; well lit white paper sits
+            // in the 230s and 240s and must not trip the hint.
             histogram[pixels[i]]++;
-            if (pixels[i] >= 250)
+            if (pixels[i] >= 254)
                 saturated++;
         }
         int p5 = Percentile(histogram, pixels.Length, 5);

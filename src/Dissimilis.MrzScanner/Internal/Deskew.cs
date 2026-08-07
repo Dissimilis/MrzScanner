@@ -86,7 +86,9 @@ internal static class Deskew
 
         // Featureless or already level frames score every angle about the
         // same; only a clear win over the level profile justifies a retry.
-        if (bestScore < levelScore * 1.03)
+        // The comparison must not pass on ties: a blank frame scores zero
+        // everywhere and the first angle tested would win otherwise.
+        if (bestScore <= 0 || bestScore <= levelScore * 1.03)
             return 0;
 
         // The shear that sharpens the profile cancels the text row slope; the

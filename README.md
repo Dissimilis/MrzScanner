@@ -67,7 +67,7 @@ void OnPreviewFrame(byte[] nv21, int width, int height)
 }
 ```
 
-`FromNv12` and `FromI420` cover the other common camera layouts, and `FromGrayscale8`/`FromBgra32` and friends take decoded buffers. `IsStable` turns true once the result is fully valid and corroborated by more than one frame. Call `Reset()` between documents.
+`FromNv12` and `FromI420` cover the other common camera layouts, and `FromGrayscale8`/`FromBgra32` and friends take decoded buffers. Camera buffers usually arrive in sensor orientation; pass the rotation the camera reports and the reader handles it: `MrzImage.FromNv21(buffer, width, height, 0, rotationDegrees)`. `IsStable` turns true once the result is fully valid and corroborated by more than one frame. Call `Reset()` between documents.
 
 `LastFrameHints` says what to fix when a frame did not read: `TooSmall` means move closer, `CutOff` means the band touches the frame edge, plus `Blurry`, `Glare`, `LowContrast` and `NoMrzDetected`. The same hints appear on `MrzResult.CaptureHints` for still photos. A frame with a clean MRZ typically reads in under 100 ms; a frame without one returns quickly so the next frame gets its turn.
 

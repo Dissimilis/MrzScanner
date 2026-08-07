@@ -19,7 +19,12 @@ public enum MrzCaptureHint
     /// <summary>The MRZ was located but characters are too soft to read. Hold steady or refocus.</summary>
     Blurry,
 
-    /// <summary>A saturated highlight overlaps the MRZ band. Tilt the document away from the light.</summary>
+    /// <summary>
+    /// A hard clipped highlight covers a large part of the MRZ band. Tilt the
+    /// document away from the light. Detection needs full range luma; video
+    /// range buffers (studio swing, luma capped near 235) never clip, so this
+    /// hint does not fire for them.
+    /// </summary>
     Glare,
 
     /// <summary>The image has very little tonal range. Improve the lighting.</summary>

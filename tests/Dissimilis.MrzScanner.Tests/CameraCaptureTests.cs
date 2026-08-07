@@ -133,6 +133,88 @@ public class CameraCaptureTests
         Assert.Empty(session.LastFrameHints);
     }
 
+    [Fact]
+    public void Estimator_returns_zero_for_featureless_frames()
+    {
+        var flat = new Internal.GrayImage(320, 240);
+        for (int i = 0; i < flat.Pixels.Length; i++)
+            flat.Pixels[i] = 128;
+        Assert.Equal(0, Internal.Deskew.EstimateCorrectionDegrees(flat));
+
+        var random = new Random(7);
+        var noise = new Internal.GrayImage(320, 240);
+        for (int i = 0; i < noise.Pixels.Length; i++)
+            noise.Pixels[i] = (byte)(120 + random.Next(0, 12));
+        Assert.Equal(0, Internal.Deskew.EstimateCorrectionDegrees(noise));
+    }
+
+    [Theory]
+    [InlineData(90)]
+    [InlineData(180)]
+    [InlineData(270)]
+    public void Reads_a_sensor_oriented_buffer_with_rotation_metadata(int rotation)
+    {
+        (byte[] gray, int width, int height) = SyntheticMrz.Render(Td3Lines);
+
+        // Undo the reported rotation to fake what the sensor would deliver:
+        // a buffer that needs rotating clockwise by that much to sit upright.
+        (byte[] sensor, int sw, int sh) = RotateExact(gray, width, height, 360 - rotation);
+
+        // SingleFrame never tries other orientations on its own, so a pass
+        // proves the rotation metadata was applied, not searched for.
+        var reader = new MrzScanner(new MrzScannerOptions { SearchEffort = MrzSearchEffort.SingleFrame });
+        MrzResult result = reader.Read(MrzImage.FromGrayscale8(sensor, sw, sh, 0, rotation));
+
+        Assert.True(result.IsValid, $"rotation {rotation}: " + string.Join("; ", result.Issues));
+    }
+
+    [Fact]
+    public void Rejects_invalid_rotation_metadata()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => MrzImage.FromNv21(new byte[100 * 100], 100, 100, 0, 45));
+    }
+
+    [Fact]
+    public void Capture_hints_cannot_be_mutated_through_a_cast()
+    {
+        var flat = new byte[640 * 480];
+        for (int i = 0; i < flat.Length; i++)
+            flat[i] = 128;
+
+        MrzResult result = MrzScanner.Default.Read(MrzImage.FromGrayscale8(flat, 640, 480));
+
+        Assert.NotEmpty(result.CaptureHints);
+        Assert.Null(result.CaptureHints as List<MrzCaptureHint>);
+    }
+
+    /// <summary>Exact 90 degree step rotation, clockwise, for building sensor oriented buffers.</summary>
+    private static (byte[] Pixels, int Width, int Height) RotateExact(byte[] pixels, int width, int height, int degrees)
+    {
+        degrees %= 360;
+        if (degrees == 0)
+            return (pixels, width, height);
+        if (degrees == 180)
+        {
+            var flipped = new byte[pixels.Length];
+            for (int i = 0; i < pixels.Length; i++)
+                flipped[pixels.Length - 1 - i] = pixels[i];
+            return (flipped, width, height);
+        }
+        var rotated = new byte[pixels.Length];
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                if (degrees == 90)
+                    rotated[x * height + (height - 1 - y)] = pixels[y * width + x];
+                else
+                    rotated[(width - 1 - x) * height + y] = pixels[y * width + x];
+            }
+        }
+        return (rotated, height, width);
+    }
+
     private static byte[] Rotate(byte[] pixels, int width, int height, double degrees)
     {
         double radians = degrees * Math.PI / 180;

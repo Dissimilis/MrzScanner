@@ -29,7 +29,13 @@ public sealed class MrzResult
         Confidence = confidence;
         Region = region;
         FieldConfidence = fieldConfidence;
-        CaptureHints = captureHints ?? Array.Empty<MrzCaptureHint>();
+        // Defensive copy: hint lists are built as List<T> internally and the
+        // public property must not be castable back to something mutable.
+        CaptureHints = captureHints is null || captureHints.Count == 0
+            ? Array.Empty<MrzCaptureHint>()
+            : captureHints is MrzCaptureHint[] array
+                ? array
+                : CopyHints(captureHints);
     }
 
     /// <summary>True when an MRZ-shaped region or text was found at all.</summary>
@@ -104,4 +110,15 @@ public sealed class MrzResult
 
     internal MrzResult WithCaptureHints(IReadOnlyList<MrzCaptureHint> captureHints) => new(
         MrzFound, Document, Raw, Checks, Issues, Confidence, Region, FieldConfidence, captureHints);
+
+    internal MrzResult WithRegion(MrzRegion region) => new(
+        MrzFound, Document, Raw, Checks, Issues, Confidence, region, FieldConfidence, CaptureHints);
+
+    private static MrzCaptureHint[] CopyHints(IReadOnlyList<MrzCaptureHint> hints)
+    {
+        var copy = new MrzCaptureHint[hints.Count];
+        for (int i = 0; i < copy.Length; i++)
+            copy[i] = hints[i];
+        return copy;
+    }
 }

@@ -67,7 +67,13 @@ internal sealed class GrayImage
                     break;
             }
         }
-        return gray;
+        return source.RotationDegrees switch
+        {
+            90 => gray.Rotate90(),
+            180 => gray.Rotate180(),
+            270 => gray.Rotate270(),
+            _ => gray,
+        };
     }
 
     /// <summary>Converts tightly packed RGBA (the decoder output format).</summary>
@@ -212,6 +218,19 @@ internal sealed class GrayImage
         int n = Pixels.Length;
         for (int i = 0; i < n; i++)
             result.Pixels[n - 1 - i] = Pixels[i];
+        return result;
+    }
+
+    /// <summary>Returns a copy rotated 90 degrees counterclockwise.</summary>
+    public GrayImage Rotate270()
+    {
+        var result = new GrayImage(Height, Width);
+        for (int y = 0; y < Height; y++)
+        {
+            int row = y * Width;
+            for (int x = 0; x < Width; x++)
+                result.Pixels[(Width - 1 - x) * Height + y] = Pixels[row + x];
+        }
         return result;
     }
 
