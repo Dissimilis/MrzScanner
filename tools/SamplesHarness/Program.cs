@@ -30,6 +30,10 @@ if (args.Length >= 2 && args[0] == "--verify")
 if (args.Length >= 2 && args[0] == "--gridsweep")
     return MrzHarness.GridSweepRunner.Run(args[1]);
 
+// Micro benchmark of the template matching inner loop.
+if (args.Length >= 1 && args[0] == "--bench")
+    return MrzHarness.BenchRunner.Run();
+
 // Render the README specimen image (synthetic ICAO example data only).
 if (args.Length >= 2 && args[0] == "--render")
     return MrzHarness.RenderRunner.Run(args[1]);
