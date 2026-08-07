@@ -38,6 +38,10 @@ if (args.Length >= 1 && args[0] == "--bench")
 if (args.Length >= 2 && args[0] == "--time")
     return MrzHarness.TimeRunner.Run(args[1]);
 
+// Aggregate found/valid statistics; prints no document content.
+if (args.Length >= 2 && args[0] == "--stats")
+    return MrzHarness.StatsRunner.Run(args[1]);
+
 // Render the README specimen image (synthetic ICAO example data only).
 if (args.Length >= 2 && args[0] == "--render")
     return MrzHarness.RenderRunner.Run(args[1]);
