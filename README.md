@@ -52,20 +52,24 @@ The result carries more than the fields:
 
 Single frames from a phone camera are often half readable: motion blur in one, glare in the next. `MrzVideoSession` folds frames together, voting per character, so the combined read can be valid even when no single frame was.
 
+Camera previews arrive as YUV, and for MRZ reading only the luma plane matters, so you can hand the buffer over as is. No JPEG round trip, no color conversion:
+
 ```csharp
 var session = new MrzVideoSession();
-foreach (MrzImage frame in CameraFrames())
+
+void OnPreviewFrame(byte[] nv21, int width, int height)
 {
-    MrzResult best = session.Feed(frame);
+    session.Feed(MrzImage.FromNv21(nv21, width, height));
     if (session.IsStable)
-    {
-        Show(best.Document!);
-        break;
-    }
+        Show(session.Best!.Document!);
+    else
+        ShowGuidance(session.LastFrameHints);
 }
 ```
 
-`IsStable` turns true once the result is fully valid and corroborated by more than one frame. A frame with a clean MRZ typically reads in under 100 ms; a frame without one returns quickly so the next frame gets its turn. Call `Reset()` between documents.
+`FromNv12` and `FromI420` cover the other common camera layouts, and `FromGrayscale8`/`FromBgra32` and friends take decoded buffers. `IsStable` turns true once the result is fully valid and corroborated by more than one frame. Call `Reset()` between documents.
+
+`LastFrameHints` says what to fix when a frame did not read: `TooSmall` means move closer, `CutOff` means the band touches the frame edge, plus `Blurry`, `Glare`, `LowContrast` and `NoMrzDetected`. The same hints appear on `MrzResult.CaptureHints` for still photos. A frame with a clean MRZ typically reads in under 100 ms; a frame without one returns quickly so the next frame gets its turn.
 
 If you want a viewfinder overlay before committing to a full read, `LocateMrz` finds MRZ-shaped bands in a few milliseconds without recognizing characters:
 
@@ -94,7 +98,7 @@ The locator finds bands of dense, monospaced text by their edge profile. Candida
 
 ## Limits
 
-The recognizer only knows the 37-character MRZ alphabet in OCR-B; it is not a general OCR. Glyphs below roughly 6 px of pitch are at the edge of what template matching can do. Mild rotation and skew are corrected, extreme perspective is not. Chip reading and the visual inspection zone are out of scope.
+The recognizer only knows the 37-character MRZ alphabet in OCR-B; it is not a general OCR. Glyphs below roughly 6 px of pitch are at the edge of what template matching can do. Tilt up to about 8 degrees is detected and corrected automatically, on top of the 90/180/270 degree orientations; extreme perspective is not. Chip reading and the visual inspection zone are out of scope.
 
 ## License
 

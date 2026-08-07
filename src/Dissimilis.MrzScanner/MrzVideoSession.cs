@@ -79,6 +79,13 @@ public sealed class MrzVideoSession
     public bool IsStable { get; private set; }
 
     /// <summary>
+    /// Capture hints from the most recently fed frame, for live guidance
+    /// overlays. <see cref="Best" /> may carry an older frame's result, so
+    /// UIs should read guidance from here, not from the returned result.
+    /// </summary>
+    public IReadOnlyList<MrzCaptureHint> LastFrameHints { get; private set; } = Array.Empty<MrzCaptureHint>();
+
+    /// <summary>
     /// Reads one frame and folds it into the session. Returns the session's
     /// best result so far, which may come from an earlier frame or from
     /// fusing several frames.
@@ -108,11 +115,13 @@ public sealed class MrzVideoSession
         _best = null;
         FramesSeen = 0;
         IsStable = false;
+        LastFrameHints = Array.Empty<MrzCaptureHint>();
     }
 
     private MrzResult Fold(MrzResult frameResult)
     {
         FramesSeen++;
+        LastFrameHints = frameResult.CaptureHints;
         if (!frameResult.MrzFound || frameResult.Raw is null || frameResult.Raw.Lines.Count == 0)
             return _best ?? frameResult;
 

@@ -16,7 +16,8 @@ public sealed class MrzResult
         IReadOnlyList<MrzIssue> issues,
         double confidence,
         MrzRegion? region = null,
-        MrzFieldConfidence? fieldConfidence = null)
+        MrzFieldConfidence? fieldConfidence = null,
+        IReadOnlyList<MrzCaptureHint>? captureHints = null)
     {
         MrzFound = mrzFound;
         Document = document;
@@ -28,6 +29,7 @@ public sealed class MrzResult
         Confidence = confidence;
         Region = region;
         FieldConfidence = fieldConfidence;
+        CaptureHints = captureHints ?? Array.Empty<MrzCaptureHint>();
     }
 
     /// <summary>True when an MRZ-shaped region or text was found at all.</summary>
@@ -71,6 +73,12 @@ public sealed class MrzResult
     /// </summary>
     public MrzRegion? Region { get; }
 
+    /// <summary>
+    /// Feedback about the capture conditions of this frame, for guiding the
+    /// user during camera scanning. Empty for clean reads and text input.
+    /// </summary>
+    public IReadOnlyList<MrzCaptureHint> CaptureHints { get; }
+
     private bool HasErrors
     {
         get
@@ -85,11 +93,15 @@ public sealed class MrzResult
         }
     }
 
-    internal static MrzResult NotFound(string message) => new(
+    internal static MrzResult NotFound(string message, IReadOnlyList<MrzCaptureHint>? captureHints = null) => new(
         mrzFound: false,
         document: null,
         raw: null,
         checks: MrzChecks.Empty,
         issues: new[] { new MrzIssue(string.Empty, MrzIssueKind.NotFound, message) },
-        confidence: 0.0);
+        confidence: 0.0,
+        captureHints: captureHints);
+
+    internal MrzResult WithCaptureHints(IReadOnlyList<MrzCaptureHint> captureHints) => new(
+        MrzFound, Document, Raw, Checks, Issues, Confidence, Region, FieldConfidence, captureHints);
 }

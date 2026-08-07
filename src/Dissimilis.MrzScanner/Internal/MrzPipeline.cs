@@ -26,26 +26,108 @@ internal static class MrzPipeline
 
     public static MrzResult Process(GrayImage image, MrzScannerOptions options, MrzParser parser, CancellationToken ct)
     {
+        Ranked? best = ProcessAllPasses(image, options, parser, ct);
+
+        // Tilted photos defeat the locator's row projections before any
+        // candidate exists to deskew, so a whole image skew estimate gets one
+        // rerun on a leveled copy. Only when nothing parsed at all: a frame
+        // that produced candidates had its chance, and re-rolling arbitration
+        // on marginal rows manufactures reads on MRZ-less card fronts.
+        if (best is null)
+        {
+            // The locator itself shrugs off a degree or two of tilt, and most
+            // handheld photos carry that much; a rescue below this threshold
+            // would double the cost of every slightly crooked non-document
+            // frame for a pass the level read effectively already had.
+            const double rescueThreshold = 2.5;
+            double correction = Deskew.EstimateCorrectionDegrees(image.DownscaleTo(options.MaxImageDimension));
+            if (Math.Abs(correction) >= rescueThreshold)
+            {
+                ct.ThrowIfCancellationRequested();
+
+                // Upright pass only: the estimator reads horizontal row
+                // structure, so a sideways document cannot have produced the
+                // correction that got us here.
+                Ranked? leveled = ProcessOriented(
+                    image.RotateBy(correction), options, parser, ct, rotatedPass: false);
+
+                // The rerun re-rolls the arbitration dice on whatever text
+                // rows the frame has, so on MRZ-less card fronts it can
+                // manufacture a passing read the first pass rightly rejected.
+                // A rescue pass only counts when it is convincing on its own:
+                // checksum agreement that did not come from wholesale coercion.
+                if (leveled is not null && IsConvincing(leveled))
+                    best = Better(best, leveled);
+            }
+        }
+
+        if (best is null)
+            return MrzResult.NotFound("No MRZ-shaped region was detected in the image.", NotFoundHints(image));
+        return GateWeakFound(best, options.SearchEffort);
+    }
+
+    private static Ranked? ProcessAllPasses(GrayImage image, MrzScannerOptions options, MrzParser parser, CancellationToken ct)
+    {
         ct.ThrowIfCancellationRequested();
         Ranked? upright = ProcessOriented(image, options, parser, ct, rotatedPass: false);
 
         // Only a convincing upright read skips the sideways pass. SingleFrame
         // skips it outright; the next video frame is cheaper than rotating.
         if (upright is not null && IsConvincing(upright))
-            return GateWeakFound(upright, options.SearchEffort);
+            return upright;
         if (options.SearchEffort == MrzSearchEffort.SingleFrame)
-        {
-            return upright is null
-                ? MrzResult.NotFound("No MRZ-shaped region was detected in the image.")
-                : GateWeakFound(upright, options.SearchEffort);
-        }
+            return upright;
 
         ct.ThrowIfCancellationRequested();
         Ranked? rotated = ProcessOriented(image.Rotate90(), options, parser, ct, rotatedPass: true);
-        Ranked? best = Better(upright, rotated);
-        if (best is null)
-            return MrzResult.NotFound("No MRZ-shaped region was detected in the image.");
-        return GateWeakFound(best, options.SearchEffort);
+        return Better(upright, rotated);
+    }
+
+    /// <summary>Hints for a frame with no candidate at all: nothing to measure but the frame itself.</summary>
+    private static IReadOnlyList<MrzCaptureHint> NotFoundHints(GrayImage image)
+    {
+        var hints = new List<MrzCaptureHint> { MrzCaptureHint.NoMrzDetected };
+        var histogram = new int[256];
+        byte[] pixels = image.Pixels;
+        int step = Math.Max(1, pixels.Length / 65536);
+        int sampled = 0;
+        for (int i = 0; i < pixels.Length; i += step)
+        {
+            histogram[pixels[i]]++;
+            sampled++;
+        }
+        if (Percentile(histogram, sampled, 95) - Percentile(histogram, sampled, 5) < 50)
+            hints.Add(MrzCaptureHint.LowContrast);
+        return hints;
+    }
+
+    /// <summary>
+    /// Turns the winning candidate's measured conditions into user guidance.
+    /// A confidently valid read gets none; hints are for frames the caller
+    /// should retake, and for weak reads they say what to change.
+    /// </summary>
+    private static IReadOnlyList<MrzCaptureHint> BuildHints(Ranked ranked)
+    {
+        MrzResult result = ranked.Result;
+        if (result.IsValid && ranked.Coercions <= 2 && ranked.Quality >= 0.75)
+            return Array.Empty<MrzCaptureHint>();
+
+        var hints = new List<MrzCaptureHint>();
+        CaptureStats stats = ranked.Stats;
+        int lineLength = result.Raw is not null && result.Raw.Lines.Count > 0
+            ? result.Raw.Lines[0].Length
+            : 36;
+        if (stats.RegionWidth / lineLength < 10)
+            hints.Add(MrzCaptureHint.TooSmall);
+        if (stats.TouchesEdge)
+            hints.Add(MrzCaptureHint.CutOff);
+        if (stats.GlareFraction > 0.08)
+            hints.Add(MrzCaptureHint.Glare);
+        if (stats.ContrastRange < 50)
+            hints.Add(MrzCaptureHint.LowContrast);
+        if (hints.Count == 0 && ranked.Quality < 0.75)
+            hints.Add(MrzCaptureHint.Blurry);
+        return hints;
     }
 
     /// <summary>
@@ -63,21 +145,24 @@ internal static class MrzPipeline
         // bounded SingleFrame search can't, so there validity only counts if
         // it came without wholesale coercion.
         bool validityTrusted = effort == MrzSearchEffort.Exhaustive || ranked.Coercions <= 2;
+        IReadOnlyList<MrzCaptureHint> hints = BuildHints(ranked);
         if (ranked.Quality >= 0.75 || (result.IsValid && validityTrusted))
-            return result;
-        return MrzResult.NotFound("An MRZ-like region was found but could not be read with enough evidence.");
+            return hints.Count == 0 ? result : result.WithCaptureHints(hints);
+        return MrzResult.NotFound(
+            "An MRZ-like region was found but could not be read with enough evidence.", hints);
     }
 
     /// <summary>A parsed interpretation with the recognition quality that produced it.</summary>
     private sealed class Ranked
     {
-        public Ranked(MrzResult result, double hypothesisScore, int coercions, MrzRegion? region, double quality)
+        public Ranked(MrzResult result, double hypothesisScore, int coercions, MrzRegion? region, double quality, CaptureStats stats)
         {
             Result = result;
             HypothesisScore = hypothesisScore;
             Coercions = coercions;
             Region = region;
             Quality = quality;
+            Stats = stats;
         }
 
         public MrzResult Result { get; }
@@ -87,6 +172,25 @@ internal static class MrzPipeline
 
         /// <summary>Calibrated recognition quality with no validity credit; the found gate's evidence.</summary>
         public double Quality { get; }
+
+        /// <summary>Capture conditions of the candidate this read came from, for hint building.</summary>
+        public CaptureStats Stats { get; }
+    }
+
+    /// <summary>Measured capture conditions of a candidate band, the raw material for capture hints.</summary>
+    private sealed class CaptureStats
+    {
+        /// <summary>Band width in original image pixels.</summary>
+        public double RegionWidth;
+
+        /// <summary>Whether the candidate touches the frame border in the pass it was found in.</summary>
+        public bool TouchesEdge;
+
+        /// <summary>Fraction of near saturated pixels inside the band crop.</summary>
+        public double GlareFraction;
+
+        /// <summary>Tonal range between the 5th and 95th percentile of the crop.</summary>
+        public int ContrastRange;
     }
 
     /// <summary>Enough honestly valid check digits to stop searching.</summary>
@@ -191,72 +295,148 @@ internal static class MrzPipeline
             int regionTop = (int)(candidate.Top * scaleY);
             int regionWidth = (int)Math.Ceiling(candidate.Right * scaleX) - regionLeft;
             int regionHeight = (int)Math.Ceiling(candidate.Bottom * scaleY) - regionTop;
+            CaptureStats stats = ComputeStats(crop, candidate, working, regionWidth);
 
-            int orientationBudget = options.SearchEffort == MrzSearchEffort.SingleFrame ? 1 : 2;
-            for (int orientation = 0; orientation < orientationBudget; orientation++)
+            best = RecognizeCrop(
+                crop, image.Width, options, parser, ct, rotatedPass,
+                regionLeft, regionTop, regionWidth, regionHeight, stats, best);
+
+            // A tilted band smears the row projections the grid search relies
+            // on. When the level read wasn't convincing and the crop measures
+            // a real skew, one rotated retry competes with the level read.
+            // Same evidence bar as the whole image rescue: a deskew rerun
+            // re-rolls arbitration and must not surface coerced junk the
+            // level pass rightly rejected. Top candidate only; paying the
+            // retry for every hopeless candidate on a non-document image
+            // costs half again the whole read.
+            if (c == 0 && (best is null || !IsConvincing(best)))
             {
-                // 180 pass only when upright wasn't convincing; it exists
-                // for upside-down documents.
-                if (orientation == 1 && best is not null && IsConvincing(best))
-                    break;
-                GrayImage oriented = orientation == 0 ? crop : crop.Rotate180();
-                long t1 = Diagnostics ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
-                List<BandRead> bands = BandRecognizer.Recognize(
-                    oriented, ct, thorough: options.SearchEffort == MrzSearchEffort.Exhaustive);
-                if (Diagnostics)
-                    RecognizeTicks += System.Diagnostics.Stopwatch.GetTimestamp() - t1;
-                foreach (BandRead band in bands)
+                // Two degrees and under the level grid read handles on its
+                // own; the retry is for tilts that actually bend the grid.
+                double correction = Deskew.EstimateCorrectionDegrees(crop);
+                if (Math.Abs(correction) >= 2.0)
                 {
-                    if (band.MeanScore < MinimumMeanScore)
-                        continue;
-
-                    List<string> text = band.AllText();
-                    MrzFormat? format = MrzFormat.Detect(text);
-                    if (format is null)
-                        continue;
-
-                    double hypothesisScore = band.HypothesisScore;
-
-                    // Snapshot shift variants before arbitration mutates the
-                    // cells; a phantom head cell shifts the whole line and no
-                    // per-cell search undoes that.
-                    List<BandRead> shiftVariants = options.SearchEffort == MrzSearchEffort.Exhaustive
-                        ? BuildShiftVariants(band, format)
-                        : new List<BandRead>();
-
-                    long t2 = Diagnostics ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
-                    ChecksumArbitrator.Arbitrate(band, format, ct);
-                    AdaptiveRefiner.Refine(band, format);
-                    ChecksumArbitrator.Arbitrate(band, format, ct);
-                    if (Diagnostics)
-                        ArbitrateTicks += System.Diagnostics.Stopwatch.GetTimestamp() - t2;
-
-                    MrzRegion region = MakeRegion(
-                        regionLeft, regionTop, regionWidth, regionHeight, image.Width,
-                        rotatedPass, flipped: orientation == 1, band.Lines.Count, hypothesisScore);
-                    MrzResult result = ParseBand(band, format, parser, region, out double quality);
-                    best = Better(best, new Ranked(result, hypothesisScore, band.Coercions, region, quality));
-
-                    // Variants only compete when the direct read looks bad.
-                    if (CountValidChecks(result.Checks) < 3 || band.Coercions >= 3)
-                    {
-                        foreach (BandRead variant in shiftVariants)
-                        {
-                            long t3 = Diagnostics ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
-                            ChecksumArbitrator.Arbitrate(variant, format, ct);
-                            AdaptiveRefiner.Refine(variant, format);
-                            ChecksumArbitrator.Arbitrate(variant, format, ct);
-                            if (Diagnostics)
-                                ArbitrateTicks += System.Diagnostics.Stopwatch.GetTimestamp() - t3;
-                            MrzResult shifted = ParseBand(variant, format, parser, region, out double shiftedQuality);
-                            best = Better(best, new Ranked(shifted, hypothesisScore, variant.Coercions, region, shiftedQuality));
-                        }
-                    }
+                    Ranked? rescued = RecognizeCrop(
+                        crop.RotateBy(correction), image.Width, options, parser, ct, rotatedPass,
+                        regionLeft, regionTop, regionWidth, regionHeight, stats, best: null);
+                    if (rescued is not null && IsConvincing(rescued))
+                        best = Better(best, rescued);
                 }
             }
         }
 
         return best;
+    }
+
+    /// <summary>
+    /// Recognizes one prepared crop in the allowed orientations and folds every
+    /// parsed interpretation into the running best.
+    /// </summary>
+    private static Ranked? RecognizeCrop(
+        GrayImage crop, int imageWidth, MrzScannerOptions options, MrzParser parser, CancellationToken ct,
+        bool rotatedPass, int regionLeft, int regionTop, int regionWidth, int regionHeight,
+        CaptureStats stats, Ranked? best)
+    {
+        int orientationBudget = options.SearchEffort == MrzSearchEffort.SingleFrame ? 1 : 2;
+        for (int orientation = 0; orientation < orientationBudget; orientation++)
+        {
+            // 180 pass only when upright wasn't convincing; it exists
+            // for upside-down documents.
+            if (orientation == 1 && best is not null && IsConvincing(best))
+                break;
+            GrayImage oriented = orientation == 0 ? crop : crop.Rotate180();
+            long t1 = Diagnostics ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+            List<BandRead> bands = BandRecognizer.Recognize(
+                oriented, ct, thorough: options.SearchEffort == MrzSearchEffort.Exhaustive);
+            if (Diagnostics)
+                RecognizeTicks += System.Diagnostics.Stopwatch.GetTimestamp() - t1;
+            foreach (BandRead band in bands)
+            {
+                if (band.MeanScore < MinimumMeanScore)
+                    continue;
+
+                List<string> text = band.AllText();
+                MrzFormat? format = MrzFormat.Detect(text);
+                if (format is null)
+                    continue;
+
+                double hypothesisScore = band.HypothesisScore;
+
+                // Snapshot shift variants before arbitration mutates the
+                // cells; a phantom head cell shifts the whole line and no
+                // per-cell search undoes that.
+                List<BandRead> shiftVariants = options.SearchEffort == MrzSearchEffort.Exhaustive
+                    ? BuildShiftVariants(band, format)
+                    : new List<BandRead>();
+
+                long t2 = Diagnostics ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+                ChecksumArbitrator.Arbitrate(band, format, ct);
+                AdaptiveRefiner.Refine(band, format);
+                ChecksumArbitrator.Arbitrate(band, format, ct);
+                if (Diagnostics)
+                    ArbitrateTicks += System.Diagnostics.Stopwatch.GetTimestamp() - t2;
+
+                MrzRegion region = MakeRegion(
+                    regionLeft, regionTop, regionWidth, regionHeight, imageWidth,
+                    rotatedPass, flipped: orientation == 1, band.Lines.Count, hypothesisScore);
+                MrzResult result = ParseBand(band, format, parser, region, out double quality);
+                best = Better(best, new Ranked(result, hypothesisScore, band.Coercions, region, quality, stats));
+
+                // Variants only compete when the direct read looks bad.
+                if (CountValidChecks(result.Checks) < 3 || band.Coercions >= 3)
+                {
+                    foreach (BandRead variant in shiftVariants)
+                    {
+                        long t3 = Diagnostics ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+                        ChecksumArbitrator.Arbitrate(variant, format, ct);
+                        AdaptiveRefiner.Refine(variant, format);
+                        ChecksumArbitrator.Arbitrate(variant, format, ct);
+                        if (Diagnostics)
+                            ArbitrateTicks += System.Diagnostics.Stopwatch.GetTimestamp() - t3;
+                        MrzResult shifted = ParseBand(variant, format, parser, region, out double shiftedQuality);
+                        best = Better(best, new Ranked(shifted, hypothesisScore, variant.Coercions, region, shiftedQuality, stats));
+                    }
+                }
+            }
+        }
+        return best;
+    }
+
+    /// <summary>Measures the capture conditions of a candidate band from its crop.</summary>
+    private static CaptureStats ComputeStats(GrayImage crop, BandCandidate candidate, GrayImage working, int regionWidth)
+    {
+        var histogram = new int[256];
+        byte[] pixels = crop.Pixels;
+        int saturated = 0;
+        for (int i = 0; i < pixels.Length; i++)
+        {
+            histogram[pixels[i]]++;
+            if (pixels[i] >= 250)
+                saturated++;
+        }
+        int p5 = Percentile(histogram, pixels.Length, 5);
+        int p95 = Percentile(histogram, pixels.Length, 95);
+        return new CaptureStats
+        {
+            RegionWidth = regionWidth,
+            TouchesEdge = candidate.Left <= 1 || candidate.Top <= 1 ||
+                          candidate.Right >= working.Width - 2 || candidate.Bottom >= working.Height - 2,
+            GlareFraction = pixels.Length > 0 ? saturated / (double)pixels.Length : 0,
+            ContrastRange = p95 - p5,
+        };
+    }
+
+    private static int Percentile(int[] histogram, int total, int percent)
+    {
+        long target = (long)total * percent / 100;
+        long seen = 0;
+        for (int v = 0; v < histogram.Length; v++)
+        {
+            seen += histogram[v];
+            if (seen >= target)
+                return v;
+        }
+        return histogram.Length - 1;
     }
 
     /// <summary>

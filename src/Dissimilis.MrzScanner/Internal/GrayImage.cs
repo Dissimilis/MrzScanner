@@ -165,6 +165,46 @@ internal sealed class GrayImage
         return result;
     }
 
+    /// <summary>
+    /// Returns a same size copy rotated by a small angle around the center,
+    /// bilinear sampled. Pixels mapping outside the source clamp to its edge,
+    /// which extends the band background instead of introducing dark corners.
+    /// </summary>
+    public GrayImage RotateBy(double degrees)
+    {
+        double radians = degrees * Math.PI / 180;
+        double cos = Math.Cos(radians);
+        double sin = Math.Sin(radians);
+        double cx = (Width - 1) / 2.0;
+        double cy = (Height - 1) / 2.0;
+        var result = new GrayImage(Width, Height);
+        for (int y = 0; y < Height; y++)
+        {
+            double dy = y - cy;
+            for (int x = 0; x < Width; x++)
+            {
+                double dx = x - cx;
+                double sx = cx + dx * cos - dy * sin;
+                double sy = cy + dx * sin + dy * cos;
+                int ix = (int)Math.Floor(sx);
+                double fx = sx - ix;
+                int iy = (int)Math.Floor(sy);
+                double fy = sy - iy;
+                int x0 = Math.Max(0, Math.Min(Width - 1, ix));
+                int x1 = Math.Max(0, Math.Min(Width - 1, ix + 1));
+                int y0 = Math.Max(0, Math.Min(Height - 1, iy));
+                int y1 = Math.Max(0, Math.Min(Height - 1, iy + 1));
+                double value =
+                    Pixels[y0 * Width + x0] * (1 - fx) * (1 - fy) +
+                    Pixels[y0 * Width + x1] * fx * (1 - fy) +
+                    Pixels[y1 * Width + x0] * (1 - fx) * fy +
+                    Pixels[y1 * Width + x1] * fx * fy;
+                result.Pixels[y * Width + x] = (byte)Math.Round(value);
+            }
+        }
+        return result;
+    }
+
     /// <summary>Returns a copy rotated by 180 degrees.</summary>
     public GrayImage Rotate180()
     {

@@ -73,6 +73,42 @@ public readonly struct MrzImage
     public static MrzImage FromBgra32(byte[] pixels, int width, int height, int stride = 0)
         => Create(pixels, width, height, stride, 4, PixelLayout.Bgra32);
 
+    /// <summary>
+    /// Wraps an Android NV21 camera preview buffer. Only the luma plane at the
+    /// start of the buffer is used; MRZ reading is grayscale, so the chroma
+    /// plane is ignored and no color conversion happens at all.
+    /// </summary>
+    /// <param name="pixels">The full NV21 buffer, or just its Y plane.</param>
+    /// <param name="width">Frame width in pixels.</param>
+    /// <param name="height">Frame height in pixels.</param>
+    /// <param name="rowStride">Bytes per luma row; 0 means tightly packed.</param>
+    public static MrzImage FromNv21(byte[] pixels, int width, int height, int rowStride = 0)
+        => Create(pixels, width, height, rowStride, 1, PixelLayout.Grayscale8);
+
+    /// <summary>
+    /// Wraps an NV12 buffer (iOS 420f/420v, Windows Media Foundation). Only
+    /// the luma plane at the start of the buffer is used; the chroma plane is
+    /// ignored and no color conversion happens at all.
+    /// </summary>
+    /// <param name="pixels">The full NV12 buffer, or just its Y plane.</param>
+    /// <param name="width">Frame width in pixels.</param>
+    /// <param name="height">Frame height in pixels.</param>
+    /// <param name="rowStride">Bytes per luma row; 0 means tightly packed.</param>
+    public static MrzImage FromNv12(byte[] pixels, int width, int height, int rowStride = 0)
+        => Create(pixels, width, height, rowStride, 1, PixelLayout.Grayscale8);
+
+    /// <summary>
+    /// Wraps a planar I420/YV12 buffer (Android Camera2 YUV_420_888 with
+    /// packed planes, WebRTC). Only the luma plane at the start of the buffer
+    /// is used; the chroma planes are ignored.
+    /// </summary>
+    /// <param name="pixels">The full planar buffer, or just its Y plane.</param>
+    /// <param name="width">Frame width in pixels.</param>
+    /// <param name="height">Frame height in pixels.</param>
+    /// <param name="rowStride">Bytes per luma row; 0 means tightly packed.</param>
+    public static MrzImage FromI420(byte[] pixels, int width, int height, int rowStride = 0)
+        => Create(pixels, width, height, rowStride, 1, PixelLayout.Grayscale8);
+
     private static MrzImage Create(byte[] pixels, int width, int height, int stride, int bytesPerPixel, PixelLayout layout)
     {
         if (pixels is null)
