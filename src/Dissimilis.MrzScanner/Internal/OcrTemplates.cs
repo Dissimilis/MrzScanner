@@ -47,6 +47,68 @@ internal static class OcrTemplates
     /// </summary>
     public static readonly float[][][] Coarse = BuildCoarse();
 
+    /// <summary>
+    /// All coarse variants flattened into one contiguous bank so a single
+    /// batched correlation ranks the whole alphabet with sequential memory
+    /// access. CoarseRowChar maps each bank row back to its alphabet index.
+    /// </summary>
+    public static readonly float[] CoarseBank;
+    public static readonly int[] CoarseRowChar;
+
+    /// <summary>Per character crisp variants (even indices) flattened contiguously.</summary>
+    public static readonly float[][] CrispBank;
+    public static readonly int[] CrispCounts;
+
+    /// <summary>Per character blurred variants (odd indices) flattened contiguously.</summary>
+    public static readonly float[][] BlurredBank;
+    public static readonly int[] BlurredCounts;
+
+    /// <summary>Largest row count across the crisp and blurred banks, for scratch buffers.</summary>
+    public static readonly int MaxVariantRows;
+
+    static OcrTemplates()
+    {
+        int coarseRows = 0;
+        foreach (float[][] group in Coarse)
+            coarseRows += group.Length;
+        CoarseBank = new float[coarseRows * CoarseWidth * CoarseHeight];
+        CoarseRowChar = new int[coarseRows];
+        int row = 0;
+        for (int i = 0; i < Coarse.Length; i++)
+        {
+            foreach (float[] coarse in Coarse[i])
+            {
+                Array.Copy(coarse, 0, CoarseBank, row * coarse.Length, coarse.Length);
+                CoarseRowChar[row] = i;
+                row++;
+            }
+        }
+
+        CrispBank = new float[Alphabet.Length][];
+        CrispCounts = new int[Alphabet.Length];
+        BlurredBank = new float[Alphabet.Length][];
+        BlurredCounts = new int[Alphabet.Length];
+        int size = Width * Height;
+        for (int i = 0; i < Alphabet.Length; i++)
+        {
+            float[][] variants = Variants[i];
+            int crisp = (variants.Length + 1) / 2;
+            int blurred = variants.Length / 2;
+            CrispCounts[i] = crisp;
+            BlurredCounts[i] = blurred;
+            CrispBank[i] = new float[crisp * size];
+            BlurredBank[i] = new float[blurred * size];
+            for (int v = 0; v < variants.Length; v++)
+            {
+                if ((v & 1) == 0)
+                    Array.Copy(variants[v], 0, CrispBank[i], (v / 2) * size, size);
+                else
+                    Array.Copy(variants[v], 0, BlurredBank[i], (v / 2) * size, size);
+            }
+            MaxVariantRows = Math.Max(MaxVariantRows, Math.Max(crisp, blurred));
+        }
+    }
+
     private static float[][][] BuildCoarse()
     {
         var result = new float[Alphabet.Length][][];

@@ -34,6 +34,10 @@ if (args.Length >= 2 && args[0] == "--gridsweep")
 if (args.Length >= 1 && args[0] == "--bench")
     return MrzHarness.BenchRunner.Run();
 
+// End to end read timing over a sample directory.
+if (args.Length >= 2 && args[0] == "--time")
+    return MrzHarness.TimeRunner.Run(args[1]);
+
 // Render the README specimen image (synthetic ICAO example data only).
 if (args.Length >= 2 && args[0] == "--render")
     return MrzHarness.RenderRunner.Run(args[1]);

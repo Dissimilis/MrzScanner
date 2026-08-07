@@ -980,16 +980,17 @@ internal static class BandRecognizer
         var coarseCell = OcrTemplates.Downsample(cell);
         OcrTemplates.Normalize(coarseCell);
         Span<float> coarseScores = stackalloc float[OcrTemplates.Alphabet.Length];
-        for (int t = 0; t < OcrTemplates.Coarse.Length; t++)
+        coarseScores.Fill(float.MinValue);
+        var coarseRowScores = new float[OcrTemplates.CoarseRowChar.Length];
+        MathKernels.DotBatch(
+            coarseCell, OcrTemplates.CoarseBank,
+            OcrTemplates.CoarseWidth * OcrTemplates.CoarseHeight,
+            coarseRowScores.Length, coarseRowScores);
+        for (int r = 0; r < coarseRowScores.Length; r++)
         {
-            float best = float.MinValue;
-            foreach (float[] coarse in OcrTemplates.Coarse[t])
-            {
-                float dot = MathKernels.Dot(coarseCell, coarse);
-                if (dot > best)
-                    best = dot;
-            }
-            coarseScores[t] = best;
+            int t = OcrTemplates.CoarseRowChar[r];
+            if (coarseRowScores[r] > coarseScores[t])
+                coarseScores[t] = coarseRowScores[r];
         }
         const int survivors = 16;
         Span<int> keep = stackalloc int[survivors];
@@ -1021,16 +1022,18 @@ internal static class BandRecognizer
         for (int i = 0; i < TopK; i++)
             topScores[i] = float.MinValue;
 
+        int cellSize = OcrTemplates.Width * OcrTemplates.Height;
+        var variantScores = new float[OcrTemplates.MaxVariantRows];
         for (int s = 0; s < survivors; s++)
         {
             int t = keep[s];
             float dot = float.MinValue;
-            float[][] variants = OcrTemplates.Variants[t];
-            for (int v = 0; v < variants.Length; v += 2)
+            int crispCount = OcrTemplates.CrispCounts[t];
+            MathKernels.DotBatch(cell, OcrTemplates.CrispBank[t], cellSize, crispCount, variantScores);
+            for (int v = 0; v < crispCount; v++)
             {
-                float variantDot = MathKernels.Dot(cell, variants[v]);
-                if (variantDot > dot)
-                    dot = variantDot;
+                if (variantScores[v] > dot)
+                    dot = variantScores[v];
             }
 
             for (int k = 0; k < TopK; k++)
@@ -1056,12 +1059,12 @@ internal static class BandRecognizer
             int index = OcrTemplates.IndexOf(topChars[k]);
             if (index < 0)
                 continue;
-            float[][] all = OcrTemplates.Variants[index];
-            for (int v = 1; v < all.Length; v += 2)
+            int blurredCount = OcrTemplates.BlurredCounts[index];
+            MathKernels.DotBatch(cell, OcrTemplates.BlurredBank[index], cellSize, blurredCount, variantScores);
+            for (int v = 0; v < blurredCount; v++)
             {
-                float dot = MathKernels.Dot(cell, all[v]);
-                if (dot > topScores[k])
-                    topScores[k] = dot;
+                if (variantScores[v] > topScores[k])
+                    topScores[k] = variantScores[v];
             }
         }
         for (int a = 0; a < TopK - 1; a++)
