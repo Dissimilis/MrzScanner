@@ -17,7 +17,7 @@
     <Authors>dissimilis</Authors>
     <Copyright>Copyright (c) dissimilis</Copyright>
     <Description>Pure C# MRZ (machine readable zone) reader for identity documents. Locates the MRZ in a photo, recognizes the OCR-B characters in managed code, and parses all ICAO 9303 formats (TD1, TD2, TD3, MRV) with full check digit validation. Includes fast MRZ area detection, calibrated confidence, and a multi-frame video session for camera capture. No native binaries, no ML runtimes.</Description>
-    <PackageTags>mrz;ocr;passport;id-card;visa;icao-9303;identity;document;kyc;scanner</PackageTags>
+    <PackageTags>mrz;mrz-scanner;machine-readable-zone;ocr;passport;id-card;visa;icao-9303;identity;document;kyc;scanner;travel-document</PackageTags>
     <PackageReleaseNotes>First release: full ICAO 9303 parsing and validation, image OCR with checksum guided recognition, MRZ area detection, region reporting, calibrated confidence with per field detail, and multi-frame video capture sessions.</PackageReleaseNotes>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageIcon>icon.png</PackageIcon>
