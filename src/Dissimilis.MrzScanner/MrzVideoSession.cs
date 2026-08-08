@@ -187,7 +187,12 @@ public sealed class MrzVideoSession
         for (int i = 0; i < lines.Count; i++)
             snapshot[i] = lines[i];
         votes.RecentReads.Add(snapshot);
-        if (votes.RecentReads.Count > 16)
+
+        // The window bounds fused corroboration, so it must be able to hold
+        // at least stableFrames agreeing reads or a fusion-only session
+        // could never turn stable.
+        int window = Math.Max(16, _stableFrames);
+        if (votes.RecentReads.Count > window)
             votes.RecentReads.RemoveAt(0);
 
         // A frame's vote weight is its confidence, with a bonus for full

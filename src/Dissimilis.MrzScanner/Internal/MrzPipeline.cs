@@ -169,7 +169,7 @@ internal static class MrzPipeline
 
         var hints = new List<MrzCaptureHint>();
         CaptureStats stats = ranked.Stats;
-        int lineLength = result.Raw is not null && result.Raw.Lines.Count > 0
+        int lineLength = result.Raw is not null && result.Raw.Lines.Count > 0 && result.Raw.Lines[0].Length > 0
             ? result.Raw.Lines[0].Length
             : 36;
         if (stats.RegionWidth / lineLength < 10)

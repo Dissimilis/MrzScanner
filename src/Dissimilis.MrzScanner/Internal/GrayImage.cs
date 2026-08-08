@@ -21,6 +21,13 @@ internal sealed class GrayImage
     /// <summary>Converts caller supplied pixels of any supported layout.</summary>
     public static GrayImage FromMrzImage(MrzImage source)
     {
+        if (source.Layout is not (MrzImage.PixelLayout.Grayscale8 or MrzImage.PixelLayout.Rgb24
+            or MrzImage.PixelLayout.Bgr24 or MrzImage.PixelLayout.Rgba32 or MrzImage.PixelLayout.Bgra32))
+        {
+            // A layout added to the enum without a conversion arm below would
+            // otherwise return a silent all-black image.
+            throw new ArgumentOutOfRangeException(nameof(source), source.Layout, "Unsupported pixel layout.");
+        }
         var gray = new GrayImage(source.Width, source.Height);
         byte[] src = source.Pixels;
         byte[] dst = gray.Pixels;

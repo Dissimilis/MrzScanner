@@ -24,7 +24,9 @@ internal static class Deskew
         GrayImage working = crop.DownscaleTo(480);
         int width = working.Width;
         int height = working.Height;
-        if (width < 40 || height < 8)
+        // Under 16 rows there are too few projection bins for the profile
+        // comparison to mean anything; a readable band is taller anyway.
+        if (width < 40 || height < 16)
             return 0;
 
         // Vertical gradient magnitude is the alignment signal: text rows and

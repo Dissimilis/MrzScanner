@@ -188,8 +188,16 @@ public readonly struct MrzImage
         if (stride == 0)
             stride = minStride;
         if (stride < minStride)
+        {
+            // A rotation passed positionally in the stride slot is the likely
+            // cause when the value happens to be a rotation constant; the
+            // rotation overloads take stride first.
+            string suffix = stride is 90 or 180 or 270
+                ? " If this value was meant as a rotation, pass the stride first: FromX(pixels, width, height, 0, rotationDegrees)."
+                : string.Empty;
             throw new ArgumentOutOfRangeException(nameof(stride), stride,
-                $"Stride must be at least {minStride} bytes for width {width}.");
+                $"Stride must be at least {minStride} bytes for width {width}.{suffix}");
+        }
 
         long required = (long)stride * (height - 1) + minStride;
         if (pixels.Length < required)
