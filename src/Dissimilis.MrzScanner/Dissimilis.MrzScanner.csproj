@@ -13,12 +13,12 @@
 
   <PropertyGroup>
     <PackageId>Dissimilis.MrzScanner</PackageId>
-    <Version>1.2.0</Version>
+    <Version>1.2.1</Version>
     <Authors>dissimilis</Authors>
     <Copyright>Copyright (c) dissimilis</Copyright>
     <Description>Pure C# MRZ (machine readable zone) reader for identity documents. Locates the MRZ in a photo, recognizes the OCR-B characters in managed code, and parses all ICAO 9303 formats (TD1, TD2, TD3, MRV) with full check digit validation. Includes fast MRZ area detection, calibrated confidence, and a multi-frame video session for camera capture. No native binaries, no ML runtimes.</Description>
     <PackageTags>mrz;mrz-scanner;machine-readable-zone;ocr;passport;id-card;visa;icao-9303;identity;document;kyc;scanner;travel-document</PackageTags>
-    <PackageReleaseNotes>Camera hardening: MrzImage factories accept the rotation cameras report for sensor oriented buffers; blank frames no longer trigger a wasted tilt retry; the tilt rescue works on the capped working image instead of rotating full resolution photos, and rescued reads report regions in original image coordinates; the glare hint now requires hard clipping so white paper does not trip it; CaptureHints is defensively copied.</PackageReleaseNotes>
+    <PackageReleaseNotes>Hardening: video sessions requiring more than 16 stable frames can now reach stability through fusion; passing a rotation in the stride slot produces an instructive error; unknown pixel layouts throw instead of reading as black; small robustness guards in the tilt estimator and capture hints.</PackageReleaseNotes>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageIcon>icon.png</PackageIcon>
     <PackageReadmeFile>README.md</PackageReadmeFile>
