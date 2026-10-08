@@ -164,7 +164,15 @@ internal static class MrzPipeline
     private static IReadOnlyList<MrzCaptureHint> BuildHints(Ranked ranked)
     {
         MrzResult result = ranked.Result;
-        if (result.IsValid && ranked.Coercions <= 2 && ranked.Quality >= 0.75)
+        // Guidance may credit verified checks even though candidate ranking
+        // uses only visual quality. Keep the previous retake threshold.
+        double hintQuality = ranked.Quality;
+        if (result.IsValid && result.CharacterScores is not null)
+        {
+            double mean = result.CharacterScores.SelectMany(row => row).DefaultIfEmpty(0).Average();
+            (_, hintQuality) = CalibrateConfidence(0.75 * mean + 0.25, false, 0);
+        }
+        if (result.IsValid && ranked.Coercions <= 2 && hintQuality >= 0.75)
             return Array.Empty<MrzCaptureHint>();
 
         var hints = new List<MrzCaptureHint>();
@@ -201,7 +209,8 @@ internal static class MrzPipeline
         // it came without wholesale coercion.
         bool validityTrusted = effort == MrzSearchEffort.Exhaustive || ranked.Coercions <= 2;
         IReadOnlyList<MrzCaptureHint> hints = BuildHints(ranked);
-        if (ranked.Quality >= 0.75 || (result.IsValid && validityTrusted))
+        if ((ranked.Quality >= 0.75 && CountValidChecks(result.Checks) > 0) ||
+            (result.IsValid && validityTrusted))
             return hints.Count == 0 ? result : result.WithCaptureHints(hints);
         return MrzResult.NotFound(
             "An MRZ-like region was found but could not be read with enough evidence.", hints);
@@ -350,7 +359,7 @@ internal static class MrzPipeline
             int regionTop = (int)(candidate.Top * scaleY);
             int regionWidth = (int)Math.Ceiling(candidate.Right * scaleX) - regionLeft;
             int regionHeight = (int)Math.Ceiling(candidate.Bottom * scaleY) - regionTop;
-            CaptureStats stats = ComputeStats(crop, candidate, working, regionWidth);
+            CaptureStats stats = ComputeStats(candidate, working, regionWidth);
 
             best = RecognizeCrop(
                 crop, image.Width, options, parser, ct, rotatedPass,
@@ -425,6 +434,8 @@ internal static class MrzPipeline
                     : new List<BandRead>();
 
                 long t2 = Diagnostics ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+                if (options.RetainCharacterEvidence)
+                    band.Evidence = band.SnapshotEvidence();
                 ChecksumArbitrator.Arbitrate(band, format, ct);
                 AdaptiveRefiner.Refine(band, format);
                 ChecksumArbitrator.Arbitrate(band, format, ct);
@@ -443,6 +454,8 @@ internal static class MrzPipeline
                     foreach (BandRead variant in shiftVariants)
                     {
                         long t3 = Diagnostics ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+                        if (options.RetainCharacterEvidence)
+                            variant.Evidence = variant.SnapshotEvidence();
                         ChecksumArbitrator.Arbitrate(variant, format, ct);
                         AdaptiveRefiner.Refine(variant, format);
                         ChecksumArbitrator.Arbitrate(variant, format, ct);
@@ -457,28 +470,32 @@ internal static class MrzPipeline
         return best;
     }
 
-    /// <summary>Measures the capture conditions of a candidate band from its crop.</summary>
-    private static CaptureStats ComputeStats(GrayImage crop, BandCandidate candidate, GrayImage working, int regionWidth)
+    /// <summary>Measures capture conditions within the located band.</summary>
+    private static CaptureStats ComputeStats(BandCandidate candidate, GrayImage working, int regionWidth)
     {
         var histogram = new int[256];
-        byte[] pixels = crop.Pixels;
+        // Exclude the extra border used by recognition from capture guidance.
+        byte[] pixels = working.Pixels;
         int saturated = 0;
-        for (int i = 0; i < pixels.Length; i++)
+        int total = 0;
+        for (int y = Math.Max(0, candidate.Top); y < Math.Min(working.Height, candidate.Bottom); y++)
         {
-            // Only hard clipping counts as glare; well lit white paper sits
-            // in the 230s and 240s and must not trip the hint.
-            histogram[pixels[i]]++;
-            if (pixels[i] >= 254)
-                saturated++;
+            for (int x = Math.Max(0, candidate.Left); x < Math.Min(working.Width, candidate.Right); x++)
+            {
+                byte pixel = pixels[y * working.Width + x];
+                histogram[pixel]++;
+                if (pixel >= 254) saturated++;
+                total++;
+            }
         }
-        int p5 = Percentile(histogram, pixels.Length, 5);
-        int p95 = Percentile(histogram, pixels.Length, 95);
+        int p5 = Percentile(histogram, total, 5);
+        int p95 = Percentile(histogram, total, 95);
         return new CaptureStats
         {
             RegionWidth = regionWidth,
             TouchesEdge = candidate.Left <= 1 || candidate.Top <= 1 ||
                           candidate.Right >= working.Width - 2 || candidate.Bottom >= working.Height - 2,
-            GlareFraction = pixels.Length > 0 ? saturated / (double)pixels.Length : 0,
+            GlareFraction = total > 0 ? saturated / (double)total : 0,
             ContrastRange = p95 - p5,
         };
     }
@@ -643,7 +660,10 @@ internal static class MrzPipeline
             ? 0.75 * meanScore + 0.25 * (valid / (double)present)
             : meanScore;
         bool isValid = parsed.Document is not null && parsed.Checks.AllValid;
-        (double confidence, quality) = CalibrateConfidence(raw, isValid, band.Coercions);
+        (double confidence, _) = CalibrateConfidence(raw, isValid, band.Coercions);
+        // Keep the visual quality component used for ranking and gating
+        // separate from checksum support in the reported confidence.
+        (_, quality) = CalibrateConfidence(meanScore, false, 0);
 
         if (confidence < 0.5)
         {
@@ -659,7 +679,10 @@ internal static class MrzPipeline
             issues: issues,
             confidence: confidence,
             region: region,
-            fieldConfidence: ComputeFieldConfidence(band, format, parsed.Checks));
+            fieldConfidence: ComputeFieldConfidence(band, format, parsed.Checks),
+            evidence: band.Evidence,
+            correctionCount: band.CorrectionCount,
+            characterScores: MrzResult.ScoresFor(band));
     }
 
     /// <summary>
@@ -698,7 +721,7 @@ internal static class MrzPipeline
     /// Per field confidence from the field's own cell scores, boosted when a
     /// valid check digit corroborates the field and cut when one contradicts it.
     /// </summary>
-    private static MrzFieldConfidence ComputeFieldConfidence(BandRead band, MrzFormat format, MrzChecks checks)
+    internal static MrzFieldConfidence ComputeFieldConfidence(BandRead band, MrzFormat format, MrzChecks checks)
     {
         return new MrzFieldConfidence(
             documentNumber: FieldScore(band, format, FieldId.DocumentNumber, checks.DocumentNumber),

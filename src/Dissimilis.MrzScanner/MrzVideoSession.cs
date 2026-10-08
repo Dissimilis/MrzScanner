@@ -7,7 +7,8 @@ namespace Dissimilis.MrzScanner;
 /// result emerges. Individual frames suffer motion blur, glare, and focus
 /// hunting; characters that are unreadable in one frame are usually readable
 /// a few frames later. The session votes per character position across
-/// frames, so the fused read can be valid even when no single frame was.
+/// frames, retaining close alternatives and bounded checksum correction, so
+/// the fused read can be valid even when no single frame was.
 /// </summary>
 /// <remarks>
 /// Not thread safe: feed frames from one thread (or synchronize externally).
@@ -22,6 +23,10 @@ public sealed class MrzVideoSession
     private readonly Dictionary<string, int> _validDocumentSightings = new();
     private MrzResult? _best;
     private int _bestFusedFrames;
+    private string? _identity;
+    private string? _pendingIdentity;
+    private int _pendingAtFrame;
+    private readonly List<MrzResult> _pendingFrames = new();
 
     private sealed class ShapeVotes
     {
@@ -34,10 +39,10 @@ public sealed class MrzVideoSession
 
         public const int AlphabetSize = 37;
         public double[][] Weights;
-        public int Frames;
+        public int Frames => RecentFrames.Count;
 
         /// <summary>Recent raw reads of this shape, for agreement counting.</summary>
-        public readonly List<string[]> RecentReads = new List<string[]>();
+        public readonly List<MrzResult> RecentFrames = new();
     }
 
     /// <summary>Session with capture defaults: SingleFrame effort, stable after two agreeing frames.</summary>
@@ -62,7 +67,7 @@ public sealed class MrzVideoSession
         if (stableFrames < 1)
             throw new ArgumentOutOfRangeException(nameof(stableFrames), stableFrames,
                 "stableFrames must be at least 1.");
-        _reader = new MrzScanner(options);
+        _reader = new MrzScanner(options, retainCharacterEvidence: true);
         _stableFrames = stableFrames;
     }
 
@@ -73,8 +78,8 @@ public sealed class MrzVideoSession
     public MrzResult? Best => _best;
 
     /// <summary>
-    /// True once <see cref="Best" /> is fully valid and the required number of
-    /// valid frames agreed on the same document number.
+    /// True once <see cref="Best" /> is fully valid and enough frames support
+    /// it, either through agreeing valid reads or close agreement with a fused read.
     /// </summary>
     public bool IsStable { get; private set; }
 
@@ -113,19 +118,73 @@ public sealed class MrzVideoSession
         _votes.Clear();
         _validDocumentSightings.Clear();
         _best = null;
+        _bestFusedFrames = 0;
+        _identity = null;
+        _pendingIdentity = null;
+        _pendingFrames.Clear();
         FramesSeen = 0;
         IsStable = false;
         LastFrameHints = Array.Empty<MrzCaptureHint>();
     }
 
-    private MrzResult Fold(MrzResult frameResult)
+    internal MrzResult Fold(MrzResult frameResult)
     {
         FramesSeen++;
+        if (FramesSeen - _pendingAtFrame > Math.Max(16, _stableFrames))
+        {
+            _pendingIdentity = null;
+            _pendingFrames.Clear();
+        }
         LastFrameHints = frameResult.CaptureHints;
         if (!frameResult.MrzFound || frameResult.Raw is null || frameResult.Raw.Lines.Count == 0)
             return _best ?? frameResult;
 
-        AccumulateVotes(frameResult);
+        if (frameResult.IsValid && frameResult.Document is not null)
+        {
+            string identity = DocumentIdentity(frameResult.Document);
+            if (_identity is not null && _identity != identity)
+            {
+                // A checksum collision is not enough to discard an established
+                // document. Keep the challenger separate until corroborated.
+                if (_pendingIdentity != identity)
+                {
+                    _pendingIdentity = identity;
+                    _pendingAtFrame = FramesSeen;
+                    _pendingFrames.Clear();
+                }
+                _pendingFrames.Add(frameResult);
+                IsStable = false;
+                if (_pendingFrames.Count < Math.Min(2, _stableFrames))
+                    return _best ?? frameResult;
+                _votes.Clear();
+                _validDocumentSightings.Clear();
+                _best = null;
+                _bestFusedFrames = 0;
+                _identity = identity;
+                foreach (MrzResult pending in _pendingFrames)
+                    FoldCurrent(pending);
+                _pendingFrames.Clear();
+                _pendingIdentity = null;
+                return _best ?? frameResult;
+            }
+            if (_identity is null)
+            {
+                foreach (var shape in _votes.Where(pair => !Compatible(pair.Value, frameResult))
+                    .Select(pair => pair.Key).ToArray())
+                    _votes.Remove(shape);
+            }
+            _identity = identity;
+        }
+        return FoldCurrent(frameResult);
+    }
+
+    private MrzResult FoldCurrent(MrzResult frameResult)
+    {
+        if (!AccumulateVotes(frameResult))
+        {
+            IsStable = false;
+            return _best ?? frameResult;
+        }
 
         if (frameResult.IsValid && frameResult.Document is not null)
         {
@@ -141,10 +200,15 @@ public sealed class MrzVideoSession
         }
 
         (MrzResult Result, int Frames)? fused = TryFuse();
-        if (fused is not null && Preferred(fused.Value.Result, _best))
+        if (fused is not null && (!fused.Value.Result.IsValid || _identity is null ||
+            DocumentIdentity(fused.Value.Result.Document!) == _identity) &&
+            (Preferred(fused.Value.Result, _best) ||
+            (_bestFusedFrames > 0 && SameText(fused.Value.Result, _best))))
         {
             _best = fused.Value.Result;
             _bestFusedFrames = fused.Value.Frames;
+            if (_best.IsValid && _best.Document is not null)
+                _identity = DocumentIdentity(_best.Document);
         }
 
         IsStable = _best is not null && _best.IsValid && Corroboration() >= _stableFrames;
@@ -161,39 +225,67 @@ public sealed class MrzVideoSession
     }
 
     /// <summary>
-    /// Sightings key by document type, issuer, and number together: two
-    /// different documents sharing a number must not corroborate each other.
+    /// Sightings include type, issuer, number and dates so different documents
+    /// sharing a number must not corroborate each other.
     /// </summary>
     private static string DocumentIdentity(MrzDocument document) =>
-        $"{document.Type}|{document.IssuingCountry}|{document.DocumentNumber}";
+        $"{document.Type}|{document.IssuingCountry}|{document.DocumentNumber}|{document.BirthDate}|{document.ExpiryDate}";
 
-    private void AccumulateVotes(MrzResult frameResult)
+    private static bool SameText(MrzResult a, MrzResult? b) =>
+        a.Raw is not null && b?.Raw is not null && a.Raw.Lines.SequenceEqual(b.Raw.Lines);
+
+    private bool AccumulateVotes(MrzResult frameResult)
     {
         IReadOnlyList<string> lines = frameResult.Raw!.Lines;
         var shape = (lines.Count, lines[0].Length);
         foreach (string line in lines)
         {
             if (line.Length != shape.Item2)
-                return;
+                return false;
         }
         if (!_votes.TryGetValue(shape, out ShapeVotes? votes))
         {
             votes = new ShapeVotes(shape.Item1, shape.Item2);
             _votes[shape] = votes;
         }
-        votes.Frames++;
-
-        var snapshot = new string[lines.Count];
-        for (int i = 0; i < lines.Count; i++)
-            snapshot[i] = lines[i];
-        votes.RecentReads.Add(snapshot);
+        if (!Compatible(votes, frameResult))
+            return false;
+        votes.RecentFrames.Add(frameResult);
 
         // The window bounds fused corroboration, so it must be able to hold
         // at least stableFrames agreeing reads or a fusion-only session
         // could never turn stable.
         int window = Math.Max(16, _stableFrames);
-        if (votes.RecentReads.Count > window)
-            votes.RecentReads.RemoveAt(0);
+        if (votes.RecentFrames.Count > window)
+            votes.RecentFrames.RemoveAt(0);
+
+        foreach (double[] row in votes.Weights)
+            Array.Clear(row, 0, row.Length);
+        foreach (MrzResult recent in votes.RecentFrames)
+            AddEvidence(votes, recent);
+        return true;
+    }
+
+    private static bool Compatible(ShapeVotes votes, MrzResult candidate)
+    {
+        if (candidate.Document is null || candidate.Checks.DocumentNumber != CheckDigitStatus.Valid)
+            return true;
+        foreach (MrzResult frame in votes.RecentFrames)
+        {
+            if (frame.Document is null || frame.Checks.DocumentNumber != CheckDigitStatus.Valid)
+                continue;
+            if (frame.Document.Type != candidate.Document.Type ||
+                frame.Document.IssuingCountry != candidate.Document.IssuingCountry ||
+                frame.Document.DocumentNumber != candidate.Document.DocumentNumber)
+                return false;
+        }
+        return true;
+    }
+
+    private static void AddEvidence(ShapeVotes votes, MrzResult frameResult)
+    {
+        IReadOnlyList<string> lines = frameResult.Raw!.Lines;
+        MrzFormat? format = MrzFormat.Detect(lines);
 
         // A frame's vote weight is its confidence, with a bonus for full
         // validity: a checksum backed read should outvote two blurry ones.
@@ -207,6 +299,28 @@ public sealed class MrzVideoSession
             double[] weights = votes.Weights[i];
             for (int x = 0; x < line.Length; x++)
             {
+                if (frameResult.Evidence is BandRead evidence)
+                {
+                    CellRead cell = evidence.Lines[i][x];
+                    bool Allowed(char c) => format is null ||
+                        ChecksumArbitrator.IsAllowed(c, format.ClassAt(i, x)) ||
+                        (c == 'X' && line[x] == 'X' && format.ClassAt(i, x) == CharClass.SexChar);
+                    double sum = 0;
+                    float best = float.MinValue;
+                    for (int k = 0; k < cell.Chars.Length; k++)
+                        if (Allowed(cell.Chars[k])) best = Math.Max(best, cell.Scores[k]);
+                    for (int k = 0; k < cell.Chars.Length; k++)
+                        if (Allowed(cell.Chars[k]) && cell.Scores[k] >= best - 0.15f)
+                            sum += Math.Exp((cell.Scores[k] - best) * 12);
+                    for (int k = 0; k < cell.Chars.Length; k++)
+                    {
+                        int candidate = OcrTemplates.IndexOf(cell.Chars[k]);
+                        if (candidate >= 0 && Allowed(cell.Chars[k]) && cell.Scores[k] >= best - 0.15f && sum > 0)
+                            weights[x * ShapeVotes.AlphabetSize + candidate] +=
+                                weight * Math.Exp((cell.Scores[k] - best) * 12) / sum;
+                    }
+                    if (sum > 0) continue;
+                }
                 int glyph = OcrTemplates.IndexOf(line[x]);
                 if (glyph >= 0)
                     weights[x * ShapeVotes.AlphabetSize + glyph] += weight;
@@ -232,11 +346,13 @@ public sealed class MrzVideoSession
             return null;
 
         var lines = new string[dominantShape.Lines];
+        var fusedCells = new List<List<CellRead>>();
         double agreement = 0;
         int cells = 0;
         for (int i = 0; i < dominantShape.Lines; i++)
         {
             var chars = new char[dominantShape.Length];
+            var row = new List<CellRead>();
             double[] weights = dominant.Weights[i];
             for (int x = 0; x < dominantShape.Length; x++)
             {
@@ -254,25 +370,55 @@ public sealed class MrzVideoSession
                     }
                 }
                 chars[x] = OcrTemplates.Alphabet[bestGlyph];
+                if (total <= 0)
+                    return null;
+                var candidates = Enumerable.Range(0, ShapeVotes.AlphabetSize)
+                    .Where(g => weights[x * ShapeVotes.AlphabetSize + g] > 0)
+                    .OrderByDescending(g => weights[x * ShapeVotes.AlphabetSize + g]).Take(8).ToArray();
+                row.Add(new CellRead(candidates.Select(g => OcrTemplates.Alphabet[g]).ToArray(),
+                    candidates.Select(g => (float)(weights[x * ShapeVotes.AlphabetSize + g] / total)).ToArray(),
+                    Array.Empty<float>()));
                 agreement += total > 0 ? bestWeight / total : 0;
                 cells++;
             }
             lines[i] = new string(chars);
+            fusedCells.Add(row);
         }
 
         MrzResult parsed = MrzParser.ParseText(string.Join("\n", lines));
         if (!parsed.MrzFound)
             return null;
+        MrzFormat? format = MrzFormat.Detect(lines);
+        var fusedBand = new BandRead(fusedCells, cells > 0 ? agreement / cells : 0, 0);
+        if (!parsed.IsValid && format is not null)
+        {
+            BandRead original = fusedBand.SnapshotEvidence();
+            ChecksumArbitrator.Arbitrate(fusedBand, format, applyGrammar: false);
+            bool accepted = false;
+            if (fusedBand.Coercions <= 2)
+            {
+                MrzResult corrected = MrzParser.ParseText(string.Join("\n", fusedBand.AllText()));
+                if (corrected.IsValid)
+                {
+                    parsed = corrected;
+                    lines = fusedBand.AllText().ToArray();
+                    accepted = true;
+                }
+            }
+            if (!accepted)
+                fusedBand = original;
+        }
 
         // Corroboration counts only the frames that actually agree with the
         // fused text; frames of the same shape reading a different document
         // must not certify a chimera as stable.
         int agreeingFrames = 0;
-        foreach (string[] read in dominant.RecentReads)
+        foreach (MrzResult frame in dominant.RecentFrames)
         {
+            IReadOnlyList<string> read = frame.Raw!.Lines;
             int matches = 0;
             int total = 0;
-            for (int i = 0; i < read.Length && i < lines.Length; i++)
+            for (int i = 0; i < read.Count && i < lines.Length; i++)
             {
                 string fusedLine = lines[i];
                 string readLine = read[i];
@@ -295,8 +441,12 @@ public sealed class MrzVideoSession
             raw: parsed.Raw,
             checks: parsed.Checks,
             issues: parsed.Issues,
-            confidence: cells > 0 ? agreement / cells : 0,
-            region: _best?.Region);
+            confidence: fusedBand.Lines.SelectMany(row => row).Average(cell => (double)cell.ChosenScore),
+            region: dominant.RecentFrames[dominant.Frames - 1].Region,
+            fieldConfidence: format is null ? null : MrzPipeline.ComputeFieldConfidence(fusedBand, format, parsed.Checks),
+            captureHints: LastFrameHints,
+            correctionCount: fusedBand.CorrectionCount,
+            characterScores: MrzResult.ScoresFor(fusedBand));
         return (fused, agreeingFrames);
     }
 

@@ -26,7 +26,11 @@ public sealed class MrzScanner : IMrzScanner
 
     /// <summary>Creates a reader.</summary>
     /// <param name="options">Reader options. Must not be null.</param>
-    public MrzScanner(MrzScannerOptions options)
+    public MrzScanner(MrzScannerOptions options) : this(options, false)
+    {
+    }
+
+    internal MrzScanner(MrzScannerOptions options, bool retainCharacterEvidence)
     {
         if (options is null)
             throw new ArgumentNullException(nameof(options));
@@ -40,6 +44,7 @@ public sealed class MrzScanner : IMrzScanner
         {
             MaxImageDimension = options.MaxImageDimension,
             SearchEffort = options.SearchEffort,
+            RetainCharacterEvidence = retainCharacterEvidence,
         };
     }
 

@@ -3,6 +3,7 @@ namespace Dissimilis.MrzScanner;
 /// <summary>Options for <see cref="MrzScanner" />.</summary>
 public sealed class MrzScannerOptions
 {
+    internal bool RetainCharacterEvidence { get; set; }
     /// <summary>
     /// Images whose longer side exceeds this are downscaled before processing.
     /// Default 2000. Lower is faster, higher preserves more detail for small MRZs.

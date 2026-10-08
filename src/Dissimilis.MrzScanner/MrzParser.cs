@@ -17,8 +17,13 @@ public sealed class MrzParser : IMrzParser
     {
     }
 
-    /// <summary>Creates a parser with a fixed reference date for two digit year resolution. For tests.</summary>
-    internal MrzParser(DateTime referenceUtcDate)
+    /// <summary>
+    /// Creates a parser with a fixed reference date for birth-date century
+    /// resolution, for example when replaying an archived scan. Two-digit
+    /// years remain ambiguous for people over 100. Expiry uses 1990 to 2089.
+    /// </summary>
+    /// <param name="referenceUtcDate">Calendar date used instead of the current UTC date.</param>
+    public MrzParser(DateTime referenceUtcDate)
     {
         _referenceUtcDate = referenceUtcDate;
     }
@@ -323,9 +328,7 @@ public sealed class MrzParser : IMrzParser
     private static (string Number, string Optional, CheckDigitStatus Status) ParseExtendedDocumentNumber(
         string numberField, string optionalField, List<MrzIssue> issues)
     {
-        int end = optionalField.IndexOf('<');
-        if (end < 0)
-            end = optionalField.Length;
+        int end = ExtendedNumber.ContinuationLength(optionalField);
         string continuation = optionalField.Substring(0, end);
         string remainder = end < optionalField.Length ? optionalField.Substring(end + 1) : string.Empty;
 

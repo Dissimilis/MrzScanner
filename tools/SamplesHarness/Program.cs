@@ -7,6 +7,34 @@ using Dissimilis.MrzScanner;
 // default; the harness always wants them.
 Environment.SetEnvironmentVariable("MRZ_DIAGNOSTICS", "1");
 
+// Aggregate-only labeled evaluation, optionally compared with a saved baseline.
+// Usage: --evaluate directory [baseline.json|-] [output.json]
+if (args.Length >= 2 && args[0] == "--evaluate")
+{
+    try
+    {
+        return MrzHarness.EvaluateRunner.Run(args[1],
+            args.Length > 2 && args[2] != "-" ? args[2] : null,
+            args.Length > 3 ? args[3] : null);
+    }
+    catch (Exception)
+    {
+        // IO and JSON exceptions can contain private manifest keys or paths.
+        Console.WriteLine("Local evaluation failed. Check the local manifest, inputs, and output paths.");
+        return 1;
+    }
+}
+
+if (args.Length >= 2 && args[0] == "--video-evaluate")
+{
+    try { return MrzHarness.VideoEvaluateRunner.Run(args[1]); }
+    catch (Exception)
+    {
+        Console.WriteLine("Local video evaluation failed. Check the local manifest and inputs.");
+        return 1;
+    }
+}
+
 // Local test harness for the samples directory.
 //
 // PRIVACY CONTRACT: the console output contains aggregate statistics only.

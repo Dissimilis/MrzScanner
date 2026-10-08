@@ -21,8 +21,14 @@ internal sealed class CellRead
     /// <summary>The normalized cell image in template space, for the adaptive pass.</summary>
     public float[] Bitmap { get; }
 
+    // Fused evidence has no bitmap. Never invent candidates by matching an
+    // empty image when only observed character alternatives are available.
+    internal bool HasBitmap => Bitmap.Length == OcrTemplates.Width * OcrTemplates.Height;
+
     public char Chosen { get; set; }
     public float ChosenScore { get; set; }
+    internal char? BeforeChecksum { get; set; }
+    internal char? LastChecksumChoice { get; set; }
 
     /// <summary>Vertical sampling offset of the best alignment, for grid refitting.</summary>
     public int OffsetY { get; set; }
@@ -43,6 +49,8 @@ internal sealed class CellRead
         float known = ScoreFor(c);
         if (known >= -0.999f)
             return known;
+        if (!HasBitmap)
+            return -1f;
         int index = OcrTemplates.IndexOf(c);
         if (index < 0)
             return -1f;
@@ -72,6 +80,16 @@ internal sealed class BandRead
 
     /// <summary>Cells the checksum search replaced. High counts mean manufactured validity.</summary>
     public int Coercions { get; set; }
+    internal int CorrectionCount => Lines.Sum(line => line.Count(cell =>
+        cell.BeforeChecksum.HasValue && cell.BeforeChecksum != cell.Chosen &&
+        cell.LastChecksumChoice == cell.Chosen));
+
+    internal BandRead? Evidence { get; set; }
+
+    internal BandRead SnapshotEvidence() => new(
+        Lines.Select(line => line.Select(cell => new CellRead(
+            (char[])cell.Chars.Clone(), (float[])cell.Scores.Clone(), Array.Empty<float>())).ToList()).ToList(),
+        MeanScore, GeometryPenalty);
 
     /// <summary>
     /// Penalty for doubled glyph captures and large centering shifts. A wrong
@@ -890,6 +908,10 @@ internal static class BandRecognizer
     internal sealed class MatchCache
     {
         public readonly Dictionary<long, CellRead> Map = new Dictionary<long, CellRead>();
+        // Scratch belongs to this crop. Reuse it across glyphs without retaining
+        // document pixels in a global pool or sharing mutable buffers across reads.
+        public readonly float[] CoarseRowScores = new float[OcrTemplates.CoarseRowChar.Length];
+        public readonly float[] VariantScores = new float[OcrTemplates.MaxVariantRows];
 
         public static long Key(int x0, int x1, int y0, int y1)
         {
@@ -942,13 +964,13 @@ internal static class BandRecognizer
         }
         UniqueMatches++;
         long t = System.Diagnostics.Stopwatch.GetTimestamp();
-        CellRead computed = MatchCellAt(gray, x0, x1, y0, y1);
+        CellRead computed = MatchCellAt(gray, x0, x1, y0, y1, cache);
         MatchTicks += System.Diagnostics.Stopwatch.GetTimestamp() - t;
         cache.Map[key] = CloneCell(computed);
         return computed;
     }
 
-    private static CellRead MatchCellAt(GrayImage gray, int x0, int x1, int y0, int y1)
+    private static CellRead MatchCellAt(GrayImage gray, int x0, int x1, int y0, int y1, MatchCache cache)
     {
         // Bilinear resample of the inverted cell into template space.
         var cell = new float[OcrTemplates.Width * OcrTemplates.Height];
@@ -981,7 +1003,7 @@ internal static class BandRecognizer
         OcrTemplates.Normalize(coarseCell);
         Span<float> coarseScores = stackalloc float[OcrTemplates.Alphabet.Length];
         coarseScores.Fill(float.MinValue);
-        var coarseRowScores = new float[OcrTemplates.CoarseRowChar.Length];
+        float[] coarseRowScores = cache.CoarseRowScores;
         MathKernels.DotBatch(
             coarseCell, OcrTemplates.CoarseBank,
             OcrTemplates.CoarseWidth * OcrTemplates.CoarseHeight,
@@ -1023,7 +1045,7 @@ internal static class BandRecognizer
             topScores[i] = float.MinValue;
 
         int cellSize = OcrTemplates.Width * OcrTemplates.Height;
-        var variantScores = new float[OcrTemplates.MaxVariantRows];
+        float[] variantScores = cache.VariantScores;
         for (int s = 0; s < survivors; s++)
         {
             int t = keep[s];

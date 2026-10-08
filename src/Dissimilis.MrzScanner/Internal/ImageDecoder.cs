@@ -47,8 +47,15 @@ internal static class ImageDecoder
             if ((long)info.Value.Width * info.Value.Height > MaxPixels)
                 return (null, Status.TooLarge);
 
-            ImageResult image = ImageResult.FromMemory(data, ColorComponents.RedGreenBlueAlpha);
-            return (GrayImage.FromRgba(image.Data, image.Width, image.Height), Status.Ok);
+            // JPEG's direct grayscale decoder returns Y rather than the exact
+            // RGB-derived luma used to calibrate recognition. Keep that luma
+            // calculation while avoiding an unnecessary alpha channel.
+            bool jpeg = data.Length >= 2 && data[0] == 0xff && data[1] == 0xd8;
+            ImageResult image = ImageResult.FromMemory(data,
+                jpeg ? ColorComponents.RedGreenBlue : ColorComponents.GreyAlpha);
+            return (jpeg
+                ? GrayImage.FromMrzImage(MrzImage.FromRgb24(image.Data, image.Width, image.Height))
+                : GrayImage.FromGrayAlpha(image.Data, image.Width, image.Height), Status.Ok);
         }
         catch (Exception e) when (e is not OutOfMemoryException)
         {

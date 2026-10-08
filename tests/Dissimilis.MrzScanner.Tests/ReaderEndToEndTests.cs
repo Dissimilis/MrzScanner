@@ -35,6 +35,9 @@ public class ReaderEndToEndTests
         Assert.Equal("ERIKSSON", result.Document.PrimaryIdentifier);
         Assert.Equal("ANNA MARIA", result.Document.SecondaryIdentifier);
         Assert.True(result.Confidence > 0.6, $"Confidence {result.Confidence}");
+        Assert.NotNull(result.CharacterScores);
+        Assert.Equal(result.Raw!.Lines.Count, result.CharacterScores.Count);
+        Assert.Equal(result.Raw.Line1.Length, result.CharacterScores[0].Count);
     }
 
     [Fact]

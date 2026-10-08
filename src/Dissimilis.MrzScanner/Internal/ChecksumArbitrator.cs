@@ -11,21 +11,26 @@ internal static class ChecksumArbitrator
     private const int MaxCandidatesPerPosition = 4;
     private const float CandidateScoreMargin = 0.35f;
 
-    public static void Arbitrate(BandRead band, MrzFormat format, CancellationToken ct = default)
+    public static void Arbitrate(BandRead band, MrzFormat format, CancellationToken ct = default, bool applyGrammar = true)
     {
-        ApplyGrammar(band, format);
+        if (applyGrammar)
+            ApplyGrammar(band, format);
+        if (!ResolveAmbiguousExtension(band, format))
+            return;
+        var fixedPositions = new HashSet<(int Line, int Position)>();
+        CheckRelation[] checks = ResolveChecks(band, format, fixedPositions);
 
         var passing = new HashSet<FieldId>();
-        foreach (CheckRelation relation in format.Checks)
+        foreach (CheckRelation relation in checks)
         {
             ct.ThrowIfCancellationRequested();
             if (relation.CheckField == FieldId.CompositeCheck)
                 continue;
-            if (TrySatisfy(band, format, relation, mustKeepPassing: null, excludePositionsOf: null))
+            if (TrySatisfy(band, format, relation, checks, fixedPositions, mustKeepPassing: null, excludePositionsOf: null))
                 passing.Add(relation.CheckField);
         }
 
-        foreach (CheckRelation relation in format.Checks)
+        foreach (CheckRelation relation in checks)
         {
             ct.ThrowIfCancellationRequested();
             if (relation.CheckField != FieldId.CompositeCheck)
@@ -34,9 +39,85 @@ internal static class ChecksumArbitrator
             // Composite: first touch only positions no passing field check
             // protects. If that fails, a field fix was probably a compensating
             // error; retry wider but keep the passing checks passing.
-            if (!TrySatisfy(band, format, relation, mustKeepPassing: passing, excludePositionsOf: passing))
-                TrySatisfy(band, format, relation, mustKeepPassing: passing, excludePositionsOf: null);
+            if (!TrySatisfy(band, format, relation, checks, fixedPositions, mustKeepPassing: passing, excludePositionsOf: passing))
+                TrySatisfy(band, format, relation, checks, fixedPositions, mustKeepPassing: passing, excludePositionsOf: null);
         }
+    }
+
+    private static bool ResolveAmbiguousExtension(BandRead band, MrzFormat format)
+    {
+        FieldDef? marker = format.Field(FieldId.DocumentNumberCheck);
+        FieldDef? optional = format.Field(FieldId.OptionalData1);
+        if (format.Type is not (DocumentType.Td1 or DocumentType.Td2) || marker is null || optional is null ||
+            band.Lines[marker.Line][marker.Start].Chosen != '<')
+            return true;
+        int length = ExtendedNumber.ContinuationLength(
+            band.LineText(optional.Line).Substring(optional.Start, optional.Length));
+        if (length == optional.Length) return true;
+        CellRead cell = band.Lines[optional.Line][optional.Start + length];
+        var alternatives = Enumerable.Range(0, cell.Chars.Length)
+            .Where(k => cell.Chars[k] != '<' && IsAllowed(cell.Chars[k], CharClass.Any) &&
+                cell.Scores[k] >= cell.ChosenScore - 0.15f).ToArray();
+        if (alternatives.Length == 0) return true;
+
+        // The document check location depends on this delimiter. Test each
+        // observed boundary against both checks before allowing other edits;
+        // otherwise a compensating edit could certify a truncated number.
+        var required = new HashSet<FieldId> { FieldId.DocumentNumberCheck, FieldId.CompositeCheck };
+        bool Supported()
+        {
+            CheckRelation[] checks = ResolveChecks(band, format, new HashSet<(int, int)>());
+            return checks.Any(c => c.CheckField == FieldId.DocumentNumberCheck) &&
+                RelationsStillPass(band, format, checks, required);
+        }
+        char original = cell.Chosen;
+        if (Supported()) return true;
+        foreach (int k in alternatives.OrderByDescending(k => cell.Scores[k]))
+        {
+            cell.Chosen = cell.Chars[k];
+            if (!Supported()) continue;
+            cell.BeforeChecksum ??= original;
+            cell.LastChecksumChoice = cell.Chosen;
+            cell.ChosenScore = cell.Scores[k];
+            band.Coercions++;
+            return true;
+        }
+        cell.Chosen = original;
+        return false;
+    }
+
+    private static CheckRelation[] ResolveChecks(BandRead band, MrzFormat format,
+        HashSet<(int Line, int Position)> fixedPositions)
+    {
+        FieldDef? marker = format.Field(FieldId.DocumentNumberCheck);
+        FieldDef? optional = format.Field(FieldId.OptionalData1);
+        if (format.Type is not (DocumentType.Td1 or DocumentType.Td2) || marker is null || optional is null ||
+            band.Lines[marker.Line][marker.Start].Chosen != '<')
+            return format.Checks;
+
+        fixedPositions.Add((marker.Line, marker.Start));
+        string text = band.LineText(optional.Line).Substring(optional.Start, optional.Length);
+        int length = ExtendedNumber.ContinuationLength(text);
+        if (length < optional.Length)
+            fixedPositions.Add((optional.Line, optional.Start + length));
+        var checks = new List<CheckRelation>();
+        foreach (CheckRelation relation in format.Checks)
+        {
+            if (relation.CheckField != FieldId.DocumentNumberCheck)
+                checks.Add(relation);
+            else if (length >= 2)
+            {
+                var protects = new List<(int Line, int Start, int Length)>(relation.Protects)
+                {
+                    (optional.Line, optional.Start, length - 1),
+                };
+                checks.Add(new CheckRelation(relation.CheckField, protects.ToArray(), false,
+                    (optional.Line, optional.Start + length - 1)));
+            }
+            // An incomplete extension stays invalid; do not turn its marker
+            // into a check digit for a silently truncated number.
+        }
+        return checks.ToArray();
     }
 
     private static void ApplyGrammar(BandRead band, MrzFormat format)
@@ -51,6 +132,12 @@ internal static class ChecksumArbitrator
             {
                 CellRead cell = cells[x];
                 CharClass allowed = format.ClassAt(line, x);
+                // Keep a decisive X so the parser can report its unsupported
+                // value. A weak X is still an OCR ambiguity, not a new grammar
+                // alternative that should compete with M/F/filler everywhere.
+                if (allowed == CharClass.SexChar && cell.Chosen == 'X' && cell.ChosenScore >= 0.90f &&
+                    (cell.Scores.Length < 2 || cell.ChosenScore - cell.Scores[1] >= 0.15f))
+                    continue;
                 if (IsAllowed(cell.Chosen, allowed))
                     continue;
                 bool found = false;
@@ -241,6 +328,8 @@ internal static class ChecksumArbitrator
         BandRead band,
         MrzFormat format,
         CheckRelation relation,
+        CheckRelation[] checks,
+        HashSet<(int Line, int Position)> fixedPositions,
         HashSet<FieldId>? mustKeepPassing,
         HashSet<FieldId>? excludePositionsOf)
     {
@@ -255,23 +344,24 @@ internal static class ChecksumArbitrator
             for (int i = 0; i < length; i++)
                 positions.Add((line, start + i));
         }
-        var checkPosition = (checkField.Line, checkField.Start);
+        var checkPosition = relation.CheckPosition ?? (checkField.Line, checkField.Start);
 
         if (IsSatisfied(band, positions, checkPosition, relation) && DatesPlausible(band, format, relation))
             return true;
 
         // Search alternates for the least confident positions.
         var searchable = new List<(int Line, int Position)>(positions) { checkPosition };
+        searchable.RemoveAll(fixedPositions.Contains);
         if (excludePositionsOf is not null)
         {
             var frozen = new HashSet<(int Line, int Position)>();
-            foreach (CheckRelation other in format.Checks)
+            foreach (CheckRelation other in checks)
             {
                 if (!excludePositionsOf.Contains(other.CheckField))
                     continue;
                 FieldDef? otherCheck = format.Field(other.CheckField);
                 if (otherCheck is not null)
-                    frozen.Add((otherCheck.Line, otherCheck.Start));
+                    frozen.Add(other.CheckPosition ?? (otherCheck.Line, otherCheck.Start));
                 foreach ((int line, int start, int length) in other.Protects)
                 {
                     for (int i = 0; i < length; i++)
@@ -322,11 +412,16 @@ internal static class ChecksumArbitrator
             CellRead cell = band.Lines[line][x];
             var digits = new List<(char Char, float Score)>(structural.Length);
             foreach (char d in structural)
-                digits.Add((d, cell.ScoreAgainst(d)));
+            {
+                float score = cell.ScoreAgainst(d);
+                if (cell.HasBitmap || score >= 0)
+                    digits.Add((d, score));
+            }
             digits.Sort((a, b) => b.Score.CompareTo(a.Score));
             if (digits.Count > 6)
                 digits.RemoveRange(6, digits.Count - 6);
-            options[i] = digits;
+            if (digits.Count > 0)
+                options[i] = digits;
         }
 
         // The check equation is linear modulo 10, so the weighted sum threads
@@ -369,8 +464,16 @@ internal static class ChecksumArbitrator
         double bestScore = double.MinValue;
         bool found = false;
 
+        // An optimistic bound skips uncompetitive branches without changing
+        // the candidate set or the checks that a winning leaf must pass.
+        var remaining = new double[options.Length + 1];
+        for (int i = options.Length - 1; i >= 0; i--)
+            remaining[i] = remaining[i + 1] + options[i].Max(p => (double)p.Score);
+
         void Search(int depth, double score, int sum, int nonFillers, char checkChar)
         {
+            if (found && score + remaining[depth] < bestScore - 1e-7)
+                return;
             if (depth == searchable.Count)
             {
                 bool satisfied;
@@ -389,7 +492,7 @@ internal static class ChecksumArbitrator
                     band.Lines[line][x].Chosen = current[i];
                 }
                 if (DatesPlausible(band, format, relation) &&
-                    (mustKeepPassing is null || RelationsStillPass(band, format, mustKeepPassing)))
+                    (mustKeepPassing is null || RelationsStillPass(band, format, checks, mustKeepPassing)))
                 {
                     bestScore = score;
                     Array.Copy(current, bestAssignment, current.Length);
@@ -434,9 +537,13 @@ internal static class ChecksumArbitrator
             if (found)
             {
                 if (bestAssignment[i] != original[i].Chosen)
+                {
                     band.Coercions++;
+                    cell.BeforeChecksum ??= original[i].Chosen;
+                    cell.LastChecksumChoice = bestAssignment[i];
+                }
                 cell.Chosen = bestAssignment[i];
-                cell.ChosenScore = cell.ScoreFor(bestAssignment[i]);
+                cell.ChosenScore = cell.ScoreAgainst(bestAssignment[i]);
             }
             else
             {
@@ -502,6 +609,16 @@ internal static class ChecksumArbitrator
             {
                 return false;
             }
+            if (chars[2] != '<' && chars[4] != '<')
+            {
+                int month = (chars[2] - '0') * 10 + chars[3] - '0';
+                int day = (chars[4] - '0') * 10 + chars[5] - '0';
+                // Unknown years may be leap years. Final century resolution
+                // and validation remain the parser's responsibility.
+                int year = chars[0] == '<' ? 2000 : 2000 + (chars[0] - '0') * 10 + chars[1] - '0';
+                if (day > DateTime.DaysInMonth(year, month))
+                    return false;
+            }
         }
         return true;
     }
@@ -516,9 +633,9 @@ internal static class ChecksumArbitrator
         return value >= min && value <= max;
     }
 
-    private static bool RelationsStillPass(BandRead band, MrzFormat format, HashSet<FieldId> relations)
+    private static bool RelationsStillPass(BandRead band, MrzFormat format, CheckRelation[] checks, HashSet<FieldId> relations)
     {
-        foreach (CheckRelation relation in format.Checks)
+        foreach (CheckRelation relation in checks)
         {
             if (!relations.Contains(relation.CheckField))
                 continue;
@@ -531,7 +648,7 @@ internal static class ChecksumArbitrator
                 for (int i = 0; i < length; i++)
                     positions.Add((line, start + i));
             }
-            if (!IsSatisfied(band, positions, (checkField.Line, checkField.Start), relation))
+            if (!IsSatisfied(band, positions, relation.CheckPosition ?? (checkField.Line, checkField.Start), relation))
                 return false;
         }
         return true;

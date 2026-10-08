@@ -61,14 +61,17 @@ internal sealed class FieldDef
 /// <summary>One check digit and the character ranges it protects.</summary>
 internal sealed class CheckRelation
 {
-    public CheckRelation(FieldId checkField, (int Line, int Start, int Length)[] protects, bool fillerAllowed)
+    public CheckRelation(FieldId checkField, (int Line, int Start, int Length)[] protects, bool fillerAllowed,
+        (int Line, int Start)? checkPosition = null)
     {
         CheckField = checkField;
         Protects = protects;
         FillerAllowed = fillerAllowed;
+        CheckPosition = checkPosition;
     }
 
     public FieldId CheckField { get; }
+    public (int Line, int Start)? CheckPosition { get; }
     public (int Line, int Start, int Length)[] Protects { get; }
 
     /// <summary>True when the check position may be a filler because the protected field can be unused.</summary>

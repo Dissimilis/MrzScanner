@@ -17,7 +17,10 @@ public sealed class MrzResult
         double confidence,
         MrzRegion? region = null,
         MrzFieldConfidence? fieldConfidence = null,
-        IReadOnlyList<MrzCaptureHint>? captureHints = null)
+        IReadOnlyList<MrzCaptureHint>? captureHints = null,
+        Internal.BandRead? evidence = null,
+        int correctionCount = 0,
+        IReadOnlyList<IReadOnlyList<double>>? characterScores = null)
     {
         MrzFound = mrzFound;
         Document = document;
@@ -29,6 +32,9 @@ public sealed class MrzResult
         Confidence = confidence;
         Region = region;
         FieldConfidence = fieldConfidence;
+        Evidence = evidence;
+        CorrectionCount = correctionCount;
+        CharacterScores = characterScores;
         // Defensive copy: hint lists are built as List<T> internally and the
         // public property must not be castable back to something mutable.
         CaptureHints = captureHints is null || captureHints.Count == 0
@@ -63,9 +69,36 @@ public sealed class MrzResult
     /// Estimate between 0 and 1 of how accurately the MRZ was read: roughly
     /// the expected fraction of characters that are correct, calibrated
     /// against measured accuracy on labeled documents. Checksum verified
-    /// reads score near 1. Always 1.0 for text input.
+    /// reads score near 1. Fused video results instead report vote support,
+    /// which is not calibrated character accuracy. Always 1.0 for text input.
     /// </summary>
     public double Confidence { get; }
+
+    /// <summary>
+    /// Number of distinct positions whose final character retains a checksum
+    /// substitution. Repeated passes count once. Zero for text input.
+    /// Grammar corrections are not counted.
+    /// A passing checksum after correction is not independent visual evidence.
+    /// </summary>
+    public int CorrectionCount { get; }
+
+    internal Internal.BandRead? Evidence { get; }
+
+    /// <summary>
+    /// Per-character visual matching scores in [0,1], in the same layout as
+    /// Raw.Lines. Fused reads report vote support instead. These scores are
+    /// not calibrated probabilities. Null for text input or no detected MRZ.
+    /// </summary>
+    public IReadOnlyList<IReadOnlyList<double>>? CharacterScores { get; }
+
+    internal static IReadOnlyList<IReadOnlyList<double>> ScoresFor(Internal.BandRead band)
+    {
+        var rows = new List<IReadOnlyList<double>>();
+        foreach (var line in band.Lines)
+            rows.Add(Array.AsReadOnly(line.Select(cell =>
+                Math.Max(0, Math.Min(1, (double)cell.ChosenScore))).ToArray()));
+        return rows.AsReadOnly();
+    }
 
     /// <summary>
     /// Per field confidence estimates, or null when no MRZ was found or the
@@ -109,10 +142,10 @@ public sealed class MrzResult
         captureHints: captureHints);
 
     internal MrzResult WithCaptureHints(IReadOnlyList<MrzCaptureHint> captureHints) => new(
-        MrzFound, Document, Raw, Checks, Issues, Confidence, Region, FieldConfidence, captureHints);
+        MrzFound, Document, Raw, Checks, Issues, Confidence, Region, FieldConfidence, captureHints, Evidence, CorrectionCount, CharacterScores);
 
     internal MrzResult WithRegion(MrzRegion region) => new(
-        MrzFound, Document, Raw, Checks, Issues, Confidence, region, FieldConfidence, CaptureHints);
+        MrzFound, Document, Raw, Checks, Issues, Confidence, region, FieldConfidence, CaptureHints, Evidence, CorrectionCount, CharacterScores);
 
     private static MrzCaptureHint[] CopyHints(IReadOnlyList<MrzCaptureHint> hints)
     {

@@ -16,6 +16,7 @@ internal static class AdaptiveRefiner
         int templateLength = OcrTemplates.Width * OcrTemplates.Height;
         var sums = new float[OcrTemplates.Alphabet.Length][];
         var counts = new int[OcrTemplates.Alphabet.Length];
+        var donors = new Dictionary<CellRead, int>();
 
         for (int lineIndex = 0; lineIndex < band.Lines.Count; lineIndex++)
         {
@@ -54,6 +55,7 @@ internal static class AdaptiveRefiner
                 for (int i = 0; i < templateLength; i++)
                     sum[i] += cell.Bitmap[i];
                 counts[index]++;
+                donors[cell] = index;
             }
         }
 
@@ -71,6 +73,8 @@ internal static class AdaptiveRefiner
         if (!any)
             return;
 
+        var independentTemplate = new float[templateLength];
+
         foreach (List<CellRead> line in band.Lines)
         {
             foreach (CellRead cell in line)
@@ -87,6 +91,16 @@ internal static class AdaptiveRefiner
                     if (index < 0 || documentTemplates[index] is null)
                         continue;
                     float[] template = documentTemplates[index]!;
+                    if (donors.TryGetValue(cell, out int donated) && donated == index)
+                    {
+                        if (counts[index] <= 1)
+                            continue;
+                        // The cell being judged must not supply its own evidence.
+                        for (int i = 0; i < templateLength; i++)
+                            independentTemplate[i] = sums[index]![i] - cell.Bitmap[i];
+                        OcrTemplates.Normalize(independentTemplate);
+                        template = independentTemplate;
+                    }
                     float dot = MathKernels.Dot(cell.Bitmap, template);
                     if (dot > cell.Scores[k])
                         cell.Scores[k] = dot;

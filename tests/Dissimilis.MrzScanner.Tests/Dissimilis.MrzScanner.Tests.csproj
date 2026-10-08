@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Dissimilis.MrzScanner\Dissimilis.MrzScanner.csproj" />
+    <Compile Include="..\..\tools\SamplesHarness\EvaluateRunner.cs" Link="Harness\EvaluateRunner.cs" />
   </ItemGroup>
 
 </Project>

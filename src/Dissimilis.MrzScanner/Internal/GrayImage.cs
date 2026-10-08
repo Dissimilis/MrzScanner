@@ -10,6 +10,17 @@ internal sealed class GrayImage
         Pixels = new byte[width * height];
     }
 
+    internal static GrayImage FromGrayAlpha(byte[] pixels, int width, int height)
+    {
+        var gray = new GrayImage(width, height);
+        for (int p = 0; p < gray.Pixels.Length; p++)
+        {
+            int alpha = pixels[p * 2 + 1];
+            gray.Pixels[p] = (byte)((pixels[p * 2] * alpha + 255 * (255 - alpha)) / 255);
+        }
+        return gray;
+    }
+
     public int Width { get; }
     public int Height { get; }
 

@@ -47,6 +47,8 @@ The result carries more than the fields:
 - `Confidence` estimates the fraction of characters read correctly, calibrated on labeled documents. `FieldConfidence` breaks that down per field, so you can trust the checksum-backed document number while re-checking a shaky name.
 - `Region` tells you where the MRZ sits in the image and how the image needs to be rotated to bring it upright. Sideways and upside-down photos are handled.
 - `Raw` has the exact recognized characters for auditing.
+- `CharacterScores` exposes per-character visual matching scores for highlighting uncertain text. They are scores, not calibrated probabilities; fused video reads report vote support.
+- `CorrectionCount` counts distinct positions that retain a checksum substitution in the final read. Repeated search passes count once. It excludes grammar corrections.
 
 ## Scanning with a camera
 
@@ -67,7 +69,9 @@ void OnPreviewFrame(byte[] nv21, int width, int height)
 }
 ```
 
-`FromNv12` and `FromI420` cover the other common camera layouts, and `FromGrayscale8`/`FromBgra32` and friends take decoded buffers. Camera buffers usually arrive in sensor orientation; pass the rotation the camera reports and the reader handles it: `MrzImage.FromNv21(buffer, width, height, 0, rotationDegrees)`. `IsStable` turns true once the result is fully valid and corroborated by more than one frame. Call `Reset()` between documents.
+`FromNv12` and `FromI420` cover the other common camera layouts, and `FromGrayscale8`/`FromBgra32` and friends take decoded buffers. Camera buffers usually arrive in sensor orientation; pass the rotation the camera reports and the reader handles it: `MrzImage.FromNv21(buffer, width, height, 0, rotationDegrees)`. `IsStable` turns true once the result is fully valid and corroborated by more than one frame. Call `Reset()` between documents. A different identity is kept separate and replaces the current document after two valid sightings (one when `stableFrames` is 1). Until then, `Best` retains the prior result and `IsStable` is false on a conflicting frame. Read current capture guidance from `LastFrameHints`, including when the fused result is valid.
+
+Fusion retains close character alternatives within a rolling window of at least 16 frames, applies bounded checksum correction, and supplies field confidence and character scores. Its overall confidence describes agreement between frames; it is not calibrated like still-image confidence.
 
 `LastFrameHints` says what to fix when a frame did not read: `TooSmall` means move closer, `CutOff` means the band touches the frame edge, plus `Blurry`, `Glare`, `LowContrast` and `NoMrzDetected`. The same hints appear on `MrzResult.CaptureHints` for still photos. A frame with a clean MRZ typically reads in under 100 ms; a frame without one returns quickly so the next frame gets its turn.
 
@@ -91,6 +95,16 @@ var reader = new MrzScanner(new MrzScannerOptions
 // Text you already have, no image involved.
 MrzResult parsed = MrzParser.ParseText("P<UTOERIKSSON<<ANNA<MARIA...");
 ```
+
+For archived scans, `new MrzParser(referenceUtcDate)` fixes the reference date used for birth-year century resolution. A two-digit year cannot distinguish a centenarian from a younger person with the same year suffix. Expiry dates retain the 1990 to 2089 window.
+
+A clearly recognized `X` in the sex field is preserved and reported as `InvalidValue`; supported values are `M`, `F`, and filler. Such a read is not valid and cannot stabilize a video session.
+
+## Local evaluation
+
+`dotnet run --project tools/SamplesHarness -c Release -- --evaluate samples/non-sensitive - samples/baseline.json` records aggregate metrics from the local `expected.json` manifest. Empty expected line arrays label images without an MRZ; `?` excludes an uncertain character from comparison. Pass the baseline path instead of `-` to fail the command on accuracy, exact-read, wrong-valid, or false-detection regressions. Missing inputs also fail. No document text or filenames are printed by this command.
+
+`--video-evaluate samples/non-sensitive` compares hard votes and alternative character evidence using the same current session implementation on 20 locally perturbed images. It is an evidence comparison, not a comparison with the previous library version. It reports aggregate results, including incorrect stable results during a sequence; it does not substitute for testing real camera sequences.
 
 ## How it works
 
